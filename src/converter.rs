@@ -1,42 +1,86 @@
 use once_cell::sync::Lazy;
 use std::{collections::HashMap, fmt};
 
+/// The character used to separate the main sections of a notation string.
 const SECTION_DELIMITER: char = '/';
+/// The character used to separate sub-sections within a main section.
 const SUB_SECTION_DELIMITER: char = '·';
 
+/// The particle used to indicate an omitted segment.
 const OMISSION_PARTICLE: &str = "[veth]";
+
+/// The particle used to indicate a veiled segment or sub-segment.
 const VEILED_PARTICLE: &str = "[selm]";
 
-const MODAL_TRUTH_PARTICLES: [&str; 27] = [
+/// The valid modal truth particles.
+const MODAL_TRUTH_PARTICLES: [&str; 48] = [
+    // "is true"
     "[kal]",
     "[kal'mi]",
     "[kal'da]",
-    "[ven]",
-    "[ven'mi]",
-    "[ven'da]",
-    "[dūl]",
-    "[dūl'mi]",
-    "[dūl'da]",
-    "[inther'kael]",
-    "[inther'kal'mi]",
-    "[inther'kal'da]",
+    // "is not true"
     "[na'kal]",
     "[na'kal'mi]",
     "[na'kal'da]",
+    // "will be true"
+    "[ven]",
+    "[ven'mi]",
+    "[ven'da]",
+    // "will not be true"
+    "[na'ven]",
+    "[na'ven'mi]",
+    "[na'ven'da]",
+    // "was once true"
+    "[dūl]",
+    "[dūl'mi]",
+    "[dūl'da]",
+    // "was not once true"
+    "[na'dūl]",
+    "[na'dūl'mi]",
+    "[na'dūl'da]",
+    // "true before the origin [of all]"
+    "[inther'kael]",
+    "[inther'kal'mi]",
+    "[inther'kal'da]",
+    // "not true before the origin [of all]"
+    "[na'inther'kael]",
+    "[na'inther'kal'mi]",
+    "[na'inther'kal'da]",
+    // "forbidden, but metaphysically true"
     "[sarn]",
     "[sarn'mi]",
     "[sarn'da]",
+    // "forbidden, but not metaphysically true"
+    "[na'sarn]",
+    "[na'sarn'mi]",
+    "[na'sarn'da]",
+    // "indeterminate" or "currently unknowable"
     "[soth]",
     "[soth'mi]",
     "[soth'da]",
+    // "not currently unknowable"
+    "[na'soth]",
+    "[na'soth'mi]",
+    "[na'soth'da]",
+    // "known true, but forbidden to declare"
     "[vesh]",
     "[vesh'mi]",
     "[vesh'da]",
+    // "not known true, but forbidden to declare"
+    "[na'vesh]",
+    "[na'vesh'mi]",
+    "[na'vesh'da]",
+    // "unknowable truth"
     "[thur]",
     "[thur'mi]",
     "[thur'da]",
+    // "not unknowable truth"
+    "[na'thur]",
+    "[na'thur'mi]",
+    "[na'thur'da]",
 ];
 
+/// Mapping from hexadecimal digit characters to their corresponding Lothar numerals.
 static DIGIT_TO_NUMERAL: Lazy<HashMap<char, &'static str>> = Lazy::new(|| {
     HashMap::from([
         ('0', "nil"),
@@ -58,25 +102,26 @@ static DIGIT_TO_NUMERAL: Lazy<HashMap<char, &'static str>> = Lazy::new(|| {
     ])
 });
 
-pub struct Converter {}
+/// Names of the sub-sections for each main section.
+static SUB_SECTION_NAMES: Lazy<Vec<Vec<&str>>> = Lazy::new(|| {
+    vec![
+        vec!["tharyn", "yen", "kaemar", "theren"],
+        vec!["orenth", "mineth", "lunath", "thren"],
+        // If you need more than 15 axes... I don't know what to tell you.
+        vec![
+            "xar", "yar", "zar", "war", "var", "uar", "tar", "sar", "rar", "qar", "par", "oar",
+            "nar", "mar", "lar", "kar",
+        ],
+        vec!["daren"],
+        vec!["duul"],
+        vec!["voth"],
+        vec![],
+    ]
+});
 
-impl Converter {
-    pub fn to_lothar(input: &str) -> ParseResult<String> {
-        // Placeholder implementation
-        Ok(input.to_string())
-    }
-
-    pub fn from_lothar(input: &str) -> ParseResult<String> {
-        // Placeholder implementation
-        Ok(input.to_string())
-    }
-}
-
-impl Converter {
-    pub fn new() -> Self {
-        Converter {}
-    }
-}
+/// A flattened list of all sub-section names for easy validation.
+static ALL_SUB_SECTION_NAMES: Lazy<Vec<&str>> =
+    Lazy::new(|| SUB_SECTION_NAMES.iter().flatten().copied().collect());
 
 pub struct NotationParser {}
 
@@ -127,14 +172,22 @@ impl NotationParser {
 
         // Iterate through each sub-segment and validate.
         // Each should be a valid hexadecimal number, an omitted particle, or a veiled particle.
-        for sub in sub_segments {
+        for (i, &sub) in sub_segments.iter().enumerate() {
+            let mut sub_string = String::new();
+
+            // Add the name of the sub-segment.
+            sub_string.push_str(SUB_SECTION_NAMES[0][i]);
+            sub_string.push_str("'");
+
             if sub == OMISSION_PARTICLE || sub == VEILED_PARTICLE {
-                bits.push(sub.to_string());
+                sub_string.push_str(&NotationParser::strip_square_brackets(sub));
             } else if NotationParser::is_valid_hex(sub) {
-                bits.push(NotationParser::digit_to_lothar(sub).to_string());
+                sub_string.push_str(&NotationParser::digit_to_lothar(sub));
             } else {
                 return Err(ParseError::InvalidHexToken(sub.to_string()));
             }
+
+            bits.push(sub_string)
         }
 
         // Placeholder implementation for date parsing.
@@ -147,7 +200,7 @@ impl NotationParser {
             return Ok(segment.to_string());
         }
 
-        let mut output = String::new();
+        let output = String::new();
 
         // Placeholder implementation for time parsing.
         Ok(output)
@@ -200,20 +253,22 @@ impl NotationParser {
         Ok(segment)
     }
 
-    fn digit_to_lothar(s: &str) -> String {
-        let mut bits = vec![];
+    fn strip_square_brackets(s: &str) -> &str {
+        s.trim_start_matches('[').trim_end_matches(']')
+    }
 
-        for c in s.chars() {
-            if let Some(&digit) = DIGIT_TO_NUMERAL.get(&c) {
-                bits.push(digit);
-            } else {
-                // If we encounter an invalid character, we can choose to handle it.
-                // For now, we'll just append the character as is.
-                bits.push("?");
+    fn digit_to_lothar(s: &str) -> String {
+        let mut out = String::new();
+
+        for (i, c) in s.chars().enumerate() {
+            if i > 0 {
+                out.push('\'');
             }
+
+            out.push_str(DIGIT_TO_NUMERAL.get(&c).copied().unwrap_or("?"));
         }
 
-        bits.join("'").to_string()
+        out
     }
 
     fn is_valid_hex(s: &str) -> bool {
@@ -276,7 +331,9 @@ mod tests {
             // Omitted time segment, everything else is defined.
             TestEntry {
                 input: "12BFF·7·D·5 / [veth] / 9·2·A / C3 / A1 / B99D / [kal'mi]",
-                expected: Ok("ath'bed'maren'eph'eph ven dol saren /\n[veth] /\n"),
+                expected: Ok(
+                    "tharyn'ath'bed'maren'eph'eph yen'ven kaemar'dol theren'saren /\n[veth] /\n",
+                ),
             },
         ];
 
