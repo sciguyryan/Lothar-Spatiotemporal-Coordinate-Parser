@@ -123,10 +123,18 @@ static SUB_SECTION_NAMES: Lazy<Vec<Vec<&str>>> = Lazy::new(|| {
 static ALL_SUB_SECTION_NAMES: Lazy<Vec<&str>> =
     Lazy::new(|| SUB_SECTION_NAMES.iter().flatten().copied().collect());
 
-pub struct NotationParser {}
+pub struct NotationParser {
+    lothar: String,
+}
 
 impl NotationParser {
-    pub fn parse(input: &str) -> ParseResult<String> {
+    pub fn new() -> Self {
+        NotationParser {
+            lothar: String::new(),
+        }
+    }
+
+    pub fn parse(&mut self, input: &str) -> ParseResult<&String> {
         // First step, we can strip all the spaces from the input string.
         let stripped = input.replace(' ', "").to_lowercase();
 
@@ -136,16 +144,9 @@ impl NotationParser {
             return Err(ParseError::SegmentCountMismatch(segments.len()));
         }
 
-        let mut lothar = String::new();
-
         // Now we can handle the parsing of the individual segments.
-        let date = NotationParser::parse_date(segments[0])?;
-        lothar.push_str(&date);
-        lothar.push_str(" /\n");
-
-        let time = NotationParser::parse_time(segments[1])?;
-        lothar.push_str(&time);
-        lothar.push_str(" /\n");
+        self.parse_date_segment(segments[0])?;
+        self.parse_time_segment(segments[1])?;
 
         let location = NotationParser::parse_location(segments[2])?;
         let dimensional_tier = NotationParser::parse_dimensional_tier(segments[3])?;
@@ -153,13 +154,22 @@ impl NotationParser {
         let timeline_branch = NotationParser::parse_timeline_branch(segments[5])?;
         let modal_truth = NotationParser::parse_modal_truth(segments[6])?;
 
-        Ok(lothar)
+        Ok(&self.lothar)
     }
 
-    fn parse_date(segment: &str) -> ParseResult<String> {
+    fn push_segment(&mut self, segment: &str, add_segment_separator: bool) {
+        self.lothar.push_str(segment);
+
+        if add_segment_separator {
+            self.lothar.push_str(" /\n");
+        }
+    }
+
+    fn parse_date_segment(&mut self, segment: &str) -> ParseResult<()> {
         // In the case of an omission, we can return the segment as is.
         if segment == OMISSION_PARTICLE {
-            return Ok(segment.to_string());
+            self.push_segment(segment, true);
+            return Ok(());
         }
 
         // There should be three sub-segments separated by '·'.
@@ -190,20 +200,21 @@ impl NotationParser {
             bits.push(sub_string)
         }
 
-        // Placeholder implementation for date parsing.
-        Ok(bits.join(" "))
+        self.push_segment(&bits.join(" "), true);
+        Ok(())
     }
 
-    fn parse_time(segment: &str) -> ParseResult<String> {
+    fn parse_time_segment(&mut self, segment: &str) -> ParseResult<()> {
         // In the case of an omission, we can return the segment as is.
         if segment == OMISSION_PARTICLE {
-            return Ok(segment.to_string());
+            self.push_segment(segment, true);
+            return Ok(());
         }
 
         let output = String::new();
 
-        // Placeholder implementation for time parsing.
-        Ok(output)
+        self.push_segment(&output, true);
+        Ok(())
     }
 
     fn parse_location(segment: &str) -> ParseResult<&str> {
@@ -338,7 +349,8 @@ mod tests {
         ];
 
         for (i, test) in tests.iter().enumerate() {
-            let result = NotationParser::parse(test.input);
+            let mut p = NotationParser::new();
+            let result = p.parse(test.input);
             if result.is_err() && test.expected.is_err() {
                 continue; // Both are errors, the test passes.
             }
