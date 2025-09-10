@@ -123,6 +123,17 @@ static SUB_SECTION_NAMES: Lazy<Vec<Vec<&str>>> = Lazy::new(|| {
 static ALL_SUB_SECTION_NAMES: Lazy<Vec<&str>> =
     Lazy::new(|| SUB_SECTION_NAMES.iter().flatten().copied().collect());
 
+/// The names of the segments of the spatiotemporal notation.
+const SEGMENT_NAMES: [&str; 7] = [
+    "tharyn'kael",
+    "lux'kael",
+    "xaryen'kael",
+    "daren'dur",
+    "duul'kael",
+    "varyn'dur",
+    "sarn'darien",
+];
+
 pub struct NotationParser {
     lothar: String,
 }
@@ -147,28 +158,37 @@ impl NotationParser {
         // Now we can handle the parsing of the individual segments.
         self.parse_date_segment(segments[0])?;
         self.parse_time_segment(segments[1])?;
-
-        let location = NotationParser::parse_location(segments[2])?;
-        let dimensional_tier = NotationParser::parse_dimensional_tier(segments[3])?;
-        let metaphysical_fold = NotationParser::parse_metaphysical_fold(segments[4])?;
-        let timeline_branch = NotationParser::parse_timeline_branch(segments[5])?;
-        let modal_truth = NotationParser::parse_modal_truth(segments[6])?;
+        self.parse_location_segment(segments[2])?;
+        self.parse_dimensional_tier_segment(segments[3])?;
+        self.parse_metaphysical_fold_segment(segments[4])?;
+        self.parse_timeline_branch_segment(segments[5])?;
+        self.parse_modal_truth_segment(segments[6])?;
 
         Ok(&self.lothar)
     }
 
-    fn push_segment(&mut self, segment: &str, add_segment_separator: bool) {
+    fn push_segment(&mut self, segment: &str, segment_index: usize) {
         self.lothar.push_str(segment);
 
-        if add_segment_separator {
+        if segment_index < SEGMENT_NAMES.len() - 1 {
             self.lothar.push_str(" /\n");
         }
     }
 
+    fn push_special_particle_segment(&mut self, particle: &str, segment_index: usize) {
+        let merged = format!(
+            "{}'{}",
+            SEGMENT_NAMES[segment_index],
+            NotationParser::strip_particle_brackets(particle)
+        );
+
+        self.push_segment(&merged, segment_index);
+    }
+
     fn parse_date_segment(&mut self, segment: &str) -> ParseResult<()> {
-        // In the case of an omission, we can return the segment as is.
-        if segment == OMISSION_PARTICLE {
-            self.push_segment(segment, true);
+        // In the case of an omission or veiling, we can push the segment as is.
+        if segment == OMISSION_PARTICLE || segment == VEILED_PARTICLE {
+            self.push_special_particle_segment(segment, 0);
             return Ok(());
         }
 
@@ -190,9 +210,9 @@ impl NotationParser {
             sub_string.push_str("'");
 
             if sub == OMISSION_PARTICLE || sub == VEILED_PARTICLE {
-                sub_string.push_str(&NotationParser::strip_square_brackets(sub));
+                sub_string.push_str(&NotationParser::strip_particle_brackets(sub));
             } else if NotationParser::is_valid_hex(sub) {
-                sub_string.push_str(&NotationParser::digit_to_lothar(sub));
+                sub_string.push_str(&NotationParser::digit_to_lothar(sub)?);
             } else {
                 return Err(ParseError::InvalidHexToken(sub.to_string()));
             }
@@ -200,75 +220,101 @@ impl NotationParser {
             bits.push(sub_string)
         }
 
-        self.push_segment(&bits.join(" "), true);
+        self.push_segment(&bits.join(" "), 0);
         Ok(())
     }
 
     fn parse_time_segment(&mut self, segment: &str) -> ParseResult<()> {
-        // In the case of an omission, we can return the segment as is.
-        if segment == OMISSION_PARTICLE {
-            self.push_segment(segment, true);
+        // In the case of an omission or veiling, we can push the segment as is.
+        if segment == OMISSION_PARTICLE || segment == VEILED_PARTICLE {
+            self.push_special_particle_segment(segment, 1);
             return Ok(());
         }
 
+        // Placeholder implementation for time segment parsing.
         let output = String::new();
 
-        self.push_segment(&output, true);
+        self.push_segment(&output, 1);
         Ok(())
     }
 
-    fn parse_location(segment: &str) -> ParseResult<&str> {
-        // In the case of an omission, we can return the segment as is.
-        if segment == OMISSION_PARTICLE {
-            return Ok(segment);
+    fn parse_location_segment(&mut self, segment: &str) -> ParseResult<()> {
+        // In the case of an omission or veiling, we can push the segment as is.
+        if segment == OMISSION_PARTICLE || segment == VEILED_PARTICLE {
+            self.push_special_particle_segment(segment, 2);
+            return Ok(());
         }
 
-        // Placeholder implementation for location parsing.
-        Ok(segment)
+        // Placeholder implementation for location segment parsing.
+        let output = String::new();
+
+        self.push_segment(&output, 2);
+        Ok(())
     }
 
-    fn parse_dimensional_tier(segment: &str) -> ParseResult<&str> {
-        // In the case of an omission, we can return the segment as is.
-        if segment == OMISSION_PARTICLE {
-            return Ok(segment);
+    fn parse_dimensional_tier_segment(&mut self, segment: &str) -> ParseResult<()> {
+        // In the case of an omission or veiling, we can push the segment as is.
+        if segment == OMISSION_PARTICLE || segment == VEILED_PARTICLE {
+            self.push_special_particle_segment(segment, 3);
+            return Ok(());
         }
 
-        // Placeholder implementation for dimensional tier parsing.
-        Ok(segment)
+        // Placeholder implementation for dimensional tier segment parsing.
+        let output = String::new();
+
+        self.push_segment(&output, 3);
+        Ok(())
     }
 
-    fn parse_metaphysical_fold(segment: &str) -> ParseResult<&str> {
-        // In the case of an omission, we can return the segment as is.
-        if segment == OMISSION_PARTICLE {
-            return Ok(segment);
+    fn parse_metaphysical_fold_segment(&mut self, segment: &str) -> ParseResult<()> {
+        // In the case of an omission or veiling, we can push the segment as is.
+        if segment == OMISSION_PARTICLE || segment == VEILED_PARTICLE {
+            self.push_special_particle_segment(segment, 4);
+            return Ok(());
         }
 
-        // Placeholder implementation for metaphysical fold parsing.
-        Ok(segment)
+        // Placeholder implementation for metaphysical fold segment parsing.
+        let output = String::new();
+
+        self.push_segment(&output, 4);
+        Ok(())
     }
 
-    fn parse_timeline_branch(segment: &str) -> ParseResult<&str> {
-        // In the case of an omission, we can return the segment as is.
-        if segment == OMISSION_PARTICLE {
-            return Ok(segment);
+    fn parse_timeline_branch_segment(&mut self, segment: &str) -> ParseResult<()> {
+        // In the case of an omission or veiling, we can push the segment as is.
+        if segment == OMISSION_PARTICLE || segment == VEILED_PARTICLE {
+            self.push_special_particle_segment(segment, 5);
+            return Ok(());
         }
 
-        // Placeholder implementation for timeline branch parsing.
-        Ok(segment)
+        // Placeholder implementation for timeline branch segment parsing.
+        let output = String::new();
+
+        self.push_segment(&output, 5);
+        Ok(())
     }
 
-    fn parse_modal_truth(segment: &str) -> ParseResult<&str> {
-        // The modal truth segment may not be omitted or veiled, under any circumstance.
+    fn parse_modal_truth_segment(&mut self, segment: &str) -> ParseResult<()> {
+        // The modal truth segment may not be omitted or veiled, under any circumstance
+        // as it serves as the anchor between the speaker and the entire coordinate.
+        if segment == OMISSION_PARTICLE || segment == VEILED_PARTICLE {
+            return Err(ParseError::ModalTruthOmission);
+        }
 
-        // Placeholder implementation for modal truth parsing.
-        Ok(segment)
+        // The modal truth particle must be one of the defined valid particles.
+        if MODAL_TRUTH_PARTICLES.contains(&segment) {
+            self.push_segment(NotationParser::strip_particle_brackets(segment), 6);
+            Ok(())
+        } else {
+            Err(ParseError::InvalidModalTruthParticle(segment.to_string()))
+        }
     }
 
-    fn strip_square_brackets(s: &str) -> &str {
+    fn strip_particle_brackets(s: &str) -> &str {
         s.trim_start_matches('[').trim_end_matches(']')
     }
 
-    fn digit_to_lothar(s: &str) -> String {
+    fn digit_to_lothar(s: &str) -> ParseResult<String> {
         let mut out = String::new();
 
         for (i, c) in s.chars().enumerate() {
@@ -276,10 +322,14 @@ impl NotationParser {
                 out.push('\'');
             }
 
-            out.push_str(DIGIT_TO_NUMERAL.get(&c).copied().unwrap_or("?"));
+            if let Some(digit) = DIGIT_TO_NUMERAL.get(&c) {
+                out.push_str(digit);
+            } else {
+                return Err(ParseError::InvalidHexToken(s.to_string()));
+            }
         }
 
-        out
+        Ok(out)
     }
 
     fn is_valid_hex(s: &str) -> bool {
@@ -297,6 +347,8 @@ pub enum ParseError {
     SegmentCountMismatch(usize),
     SubSegmentCountMismatch(usize, usize),
     InvalidHexToken(String),
+    ModalTruthOmission,
+    InvalidModalTruthParticle(String),
 }
 
 impl fmt::Display for ParseError {
@@ -314,6 +366,12 @@ impl fmt::Display for ParseError {
             ParseError::InvalidHexToken(token) => {
                 write!(f, "Invalid hexadecimal token: '{token}'")
             }
+            ParseError::ModalTruthOmission => {
+                write!(f, "Modal truth segment cannot be omitted")
+            }
+            ParseError::InvalidModalTruthParticle(particle) => {
+                write!(f, "Invalid modal truth particle: '{particle}'")
+            }
         }
     }
 }
@@ -324,42 +382,71 @@ type ParseResult<T> = Result<T, ParseError>;
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf};
+
     use super::*;
 
-    struct TestEntry<'a> {
-        input: &'static str,
-        expected: ParseResult<&'a str>,
+    struct TestEntry {
+        id: usize,
+        input: String,
+        output: String,
+        expected: ParseResult<()>,
+    }
+
+    impl TestEntry {
+        fn new(
+            id: usize,
+            input_file: &str,
+            expected_file: &str,
+            expected: ParseResult<()>,
+        ) -> Self {
+            Self {
+                id,
+                input: Self::get_test_file(&TestEntry::get_test_file_path(input_file)),
+                output: Self::get_test_file(&TestEntry::get_test_file_path(expected_file)),
+                expected,
+            }
+        }
+
+        fn get_test_file_path(filename: &str) -> String {
+            let manifest_dir = env!("CARGO_MANIFEST_DIR");
+            let tests_dir: PathBuf = [manifest_dir, "tests", filename].iter().collect();
+            tests_dir.display().to_string()
+        }
+
+        fn get_test_file(path: &str) -> String {
+            let content = fs::read_to_string(path).unwrap_or("".to_string());
+            content.trim().to_string()
+        }
     }
 
     #[test]
     fn test_notation_segment_parser() {
         let tests = vec![
             // Omitted date segment, everything else is defined.
-            TestEntry {
-                input: "[veth] / E·23·34·1 / 9·2·A / C3 / A1 / B99D / [kal'mi]",
-                expected: Ok("[veth] /\n /\n"),
-            },
+            TestEntry::new(1, "1_notation.txt", "1_lothar.txt", Ok(())),
             // Omitted time segment, everything else is defined.
-            TestEntry {
-                input: "12BFF·7·D·5 / [veth] / 9·2·A / C3 / A1 / B99D / [kal'mi]",
-                expected: Ok(
-                    "tharyn'ath'bed'maren'eph'eph yen'ven kaemar'dol theren'saren /\n[veth] /\n",
-                ),
-            },
+            //TestEntry {
+            //    input: "12BFF·7·D·5 / [veth] / 9·2·A / C3 / A1 / B99D / [kal'mi]",
+            //    expected: Ok(
+            //        "tharyn'ath'bed'maren'eph'eph yen'ven kaemar'dol theren'saren /\nveth /\n",
+            //    ),
+            //},
         ];
 
-        for (i, test) in tests.iter().enumerate() {
+        for test in tests {
             let mut p = NotationParser::new();
-            let result = p.parse(test.input);
-            if result.is_err() && test.expected.is_err() {
-                continue; // Both are errors, the test passes.
-            }
+            let result = p.parse(&test.input);
+            let i = test.id;
 
             match (&result, &test.expected) {
-                (Ok(r1), Ok(r2)) => assert_eq!(
-                    r1, r2,
-                    "Test case {i} failed: result '{r1}' != expected '{r2}'"
-                ),
+                (Ok(r1), Ok(_)) => {
+                    let r2 = test.output;
+                    assert_eq!(
+                        **r1, r2,
+                        "Test case {i} failed: result '{r1}' != expected '{r2}'"
+                    )
+                }
                 (Err(e1), Err(e2)) => assert_eq!(
                     e1, e2,
                     "Test case {i} failed: result '{e1}' != expected '{e2}'"
