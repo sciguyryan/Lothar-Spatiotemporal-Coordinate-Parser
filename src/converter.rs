@@ -424,7 +424,7 @@ mod tests {
     fn test_notation_segment_parser() {
         let tests = vec![
             // Omitted date segment, everything else is defined.
-            TestEntry::new(1, "1_notation.txt", "1_lothar.txt", Ok(())),
+            TestEntry::new(1, "1_notation_pass.txt", "1_lothar_pass.txt", Ok(())),
             // Omitted time segment, everything else is defined.
             //TestEntry {
             //    input: "12BFF·7·D·5 / [veth] / 9·2·A / C3 / A1 / B99D / [kal'mi]",
