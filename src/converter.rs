@@ -460,16 +460,16 @@ mod tests {
                     let r2 = test.output;
                     assert_eq!(
                         **r1, r2,
-                        "Test case {i} failed: result '{r1}' != expected '{r2}'"
+                        "Test case {i:04} failed: result '{r1}' != expected '{r2}'"
                     )
                 }
                 (Err(e1), Err(e2)) => assert_eq!(
                     e1, e2,
-                    "Test case {i} failed: result '{e1}' != expected '{e2}'"
+                    "Test case {i:04} failed: result '{e1}' != expected '{e2}'"
                 ),
                 _ => assert!(
                     false,
-                    "Test case {i} failed: mismatched result and expected: '{result:?}' != '{:?}'",
+                    "Test case {i:04} failed: mismatched result and expected: '{result:?}' != '{:?}'",
                     test.expected
                 ),
             }
