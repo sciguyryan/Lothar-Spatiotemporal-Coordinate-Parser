@@ -192,10 +192,10 @@ impl NotationParser {
             return Ok(());
         }
 
-        // There should be three sub-segments separated by '·'.
+        // There should be four sub-segments separated by '·'.
         let sub_segments: Vec<&str> = segment.split(SUB_SECTION_DELIMITER).collect();
         if sub_segments.len() != 4 {
-            return Err(ParseError::SubSegmentCountMismatch(3, sub_segments.len()));
+            return Err(ParseError::SubSegmentCountMismatch(4, sub_segments.len()));
         }
 
         let mut bits = vec![];
@@ -211,10 +211,10 @@ impl NotationParser {
 
             if sub == OMISSION_PARTICLE || sub == VEILED_PARTICLE {
                 sub_string.push_str(&NotationParser::strip_particle_brackets(sub));
-            } else if NotationParser::is_valid_hex(sub) {
-                sub_string.push_str(&NotationParser::digit_to_lothar(sub)?);
             } else {
-                return Err(ParseError::InvalidHexToken(sub.to_string()));
+                // We are expecting one or more hex digits here.
+                // If we encounter something that isn't a valid hex digit, we should return an error.
+                sub_string.push_str(&NotationParser::digit_to_lothar(sub)?);
             }
 
             bits.push(sub_string)
@@ -229,6 +229,12 @@ impl NotationParser {
         if segment == OMISSION_PARTICLE || segment == VEILED_PARTICLE {
             self.push_special_particle_segment(segment, 1);
             return Ok(());
+        }
+
+        // There should be four sub-segments separated by '·'.
+        let sub_segments: Vec<&str> = segment.split(SUB_SECTION_DELIMITER).collect();
+        if sub_segments.len() != 4 {
+            return Err(ParseError::SubSegmentCountMismatch(4, sub_segments.len()));
         }
 
         // Placeholder implementation for time segment parsing.
@@ -396,21 +402,25 @@ mod tests {
     impl TestEntry {
         fn new(
             id: usize,
+            folder: &str,
             input_file: &str,
             expected_file: &str,
             expected: ParseResult<()>,
         ) -> Self {
+            let input_path = TestEntry::get_test_file_path(folder, input_file);
+            let output_path = TestEntry::get_test_file_path(folder, expected_file);
             Self {
                 id,
-                input: Self::get_test_file(&TestEntry::get_test_file_path(input_file)),
-                output: Self::get_test_file(&TestEntry::get_test_file_path(expected_file)),
+                input: Self::get_test_file(&input_path),
+                output: Self::get_test_file(&output_path),
                 expected,
             }
         }
 
-        fn get_test_file_path(filename: &str) -> String {
-            let manifest_dir = env!("CARGO_MANIFEST_DIR");
-            let tests_dir: PathBuf = [manifest_dir, "tests", filename].iter().collect();
+        fn get_test_file_path(folder: &str, filename: &str) -> String {
+            let tests_dir: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", folder, filename]
+                .iter()
+                .collect();
             tests_dir.display().to_string()
         }
 
@@ -424,7 +434,13 @@ mod tests {
     fn test_notation_segment_parser() {
         let tests = vec![
             // Omitted date segment, everything else is defined.
-            TestEntry::new(1, "1_notation_pass.txt", "1_lothar_pass.txt", Ok(())),
+            TestEntry::new(
+                1,
+                "001 - Full Coordinate - Pass",
+                "(in) notation.txt",
+                "(out) lôthar.txt",
+                Ok(()),
+            ),
             // Omitted time segment, everything else is defined.
             //TestEntry {
             //    input: "12BFF·7·D·5 / [veth] / 9·2·A / C3 / A1 / B99D / [kal'mi]",
