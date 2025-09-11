@@ -134,6 +134,30 @@ const SEGMENT_NAMES: [&str; 7] = [
     "sarn'darien",
 ];
 
+/// The maximum valid values for each date sub-segment.
+const DATE_SUBSEGMENT_MAXIMUMS: [u64; 4] = [
+    // Cycle
+    0xffffffffffffffff,
+    // Year
+    0xff,
+    // Month
+    0xf,
+    // Day
+    0xf,
+];
+
+/// The maximum valid values for each time sub-segment.
+const TIME_SUBSEGMENT_MAXIMUMS: [u64; 4] = [
+    // Hour
+    0xf,
+    // Minute
+    0x3f,
+    // Second
+    0x3f,
+    // Divine Tick
+    0xffffffffffffffff,
+];
+
 pub struct NotationParser {
     lothar: String,
 }
@@ -211,10 +235,17 @@ impl NotationParser {
 
             if sub == OMISSION_PARTICLE || sub == VEILED_PARTICLE {
                 sub_string.push_str(&NotationParser::strip_particle_brackets(sub));
-            } else {
+            } else if NotationParser::is_valid_hex(sub) {
+                NotationParser::validate_date_subsegment_range(sub, i)?;
+
                 // We are expecting one or more hex digits here.
                 // If we encounter something that isn't a valid hex digit, we should return an error.
                 sub_string.push_str(&NotationParser::digit_to_lothar(sub)?);
+            } else if sub.starts_with('{') || sub.ends_with('}') {
+                sub_string.push_str(&NotationParser::parse_error_bound_subsegment(sub)?);
+            } else {
+                // TODO - add parsing for a Vectorial Time Flow Modifiers (VTFM) notations here.
+                // TODO - add parsing for Temporal Loop notations here.
             }
 
             bits.push(sub_string)
@@ -316,6 +347,32 @@ impl NotationParser {
         }
     }
 
+    fn validate_date_subsegment_range(subsegment: &str, index: usize) -> ParseResult<()> {
+        let hex = NotationParser::str_to_hex(subsegment);
+        if hex > DATE_SUBSEGMENT_MAXIMUMS[index] {
+            return match index {
+                0 => Err(ParseError::CycleOutOfRange(hex)),
+                1 => Err(ParseError::YearOutOfRange(hex)),
+                2 => Err(ParseError::MonthOutOfRange(hex)),
+                3 => Err(ParseError::DayOutOfRange(hex)),
+                _ => unreachable!(),
+            };
+        }
+
+        Ok(())
+    }
+
+    fn parse_error_bound_subsegment(subsegment: &str) -> ParseResult<String> {
+        // A valid error-bound sub-segment must start with '{' and end with '}'.
+        if subsegment.starts_with('{') && subsegment.ends_with('}') {
+            Ok("".to_string())
+        } else {
+            // If there is a mismatch, e.g. an opening brace without a closing brace,
+            // then the range notation isn't valid.
+            Err(ParseError::MalformedErrorBoundSubsegment)
+        }
+    }
+
     fn strip_particle_brackets(s: &str) -> &str {
         s.trim_start_matches('[').trim_end_matches(']')
     }
@@ -338,6 +395,19 @@ impl NotationParser {
         Ok(out)
     }
 
+    fn str_to_hex(s: &str) -> u64 {
+        // Empty string should probably be considered invalid.
+        if s.is_empty() {
+            return 0;
+        }
+
+        if let Ok(hex) = u64::from_str_radix(s, 16) {
+            hex
+        } else {
+            0
+        }
+    }
+
     fn is_valid_hex(s: &str) -> bool {
         // Empty string should probably be considered invalid.
         if s.is_empty() {
@@ -355,6 +425,11 @@ pub enum ParseError {
     InvalidHexToken(String),
     ModalTruthOmission,
     InvalidModalTruthParticle(String),
+    MalformedErrorBoundSubsegment,
+    CycleOutOfRange(u64),
+    YearOutOfRange(u64),
+    MonthOutOfRange(u64),
+    DayOutOfRange(u64),
 }
 
 impl fmt::Display for ParseError {
@@ -377,6 +452,24 @@ impl fmt::Display for ParseError {
             }
             ParseError::InvalidModalTruthParticle(particle) => {
                 write!(f, "Invalid modal truth particle: '{particle}'")
+            }
+            ParseError::MalformedErrorBoundSubsegment => {
+                write!(
+                    f,
+                    "Malformed EBSS notation, must be enclosed in '{{' and '}}'"
+                )
+            }
+            ParseError::CycleOutOfRange(cycle) => {
+                write!(f, "Cycle out of range: '{cycle:02x}' (max = 0xff)")
+            }
+            ParseError::YearOutOfRange(year) => {
+                write!(f, "Year out of range: '{year:02x}' (max = 0xff)")
+            }
+            ParseError::MonthOutOfRange(month) => {
+                write!(f, "Month out of range: '{month:x}' (max = 0xf)")
+            }
+            ParseError::DayOutOfRange(day) => {
+                write!(f, "Day out of range: '{day:x}' (max = 0xf)")
             }
         }
     }
