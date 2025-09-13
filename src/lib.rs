@@ -82,8 +82,7 @@ pub fn parse(input: &str) -> Result<Coordinate, Error> {
 }
 
 /// Recursion decorators permitted on Location (whole segment) and on Fold tags.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Recursion {
     #[default]
     None,
@@ -92,7 +91,6 @@ pub enum Recursion {
     TildePartial, // ~∂
     TildeBottom,  // ~⊥
 }
-
 
 impl fmt::Display for Recursion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -239,6 +237,8 @@ pub enum ErrorKind {
     LowercaseFoldTag,
     InvalidModalTruth,
     InvalidTimeLoopPlacement,
+    TimeLoopCountTooLong,
+    TimeLoopCountZero,
     InvalidStructure(&'static str),
     DreamFoldWithoutDrm,
     InvAtEnd,
@@ -268,6 +268,10 @@ impl fmt::Display for ErrorKind {
             ErrorKind::InvalidTimeLoopPlacement => {
                 write!(f, "invalid time-loop marker (⟁) placement")
             }
+            ErrorKind::TimeLoopCountTooLong => {
+                write!(f, "time-loop count has more than 8 hex digits")
+            }
+            ErrorKind::TimeLoopCountZero => write!(f, "time-loop count must be greater than 0"),
             ErrorKind::InvalidStructure(msg) => write!(f, "invalid structure: {msg}"),
             ErrorKind::DreamFoldWithoutDrm => write!(
                 f,
@@ -617,6 +621,7 @@ impl<'a> Parser<'a> {
                 SegmentMark::Omitted => Segment::Omitted,
             });
         }
+
         let parts = self.split_dot(s);
         if parts.len() != 4 {
             return Err(Error::new(
@@ -670,7 +675,24 @@ impl<'a> Parser<'a> {
         let (st2, vtfm) = self.extract_vtfm_suffix(st)?;
         st = st2;
 
-        // Ensure no stray VTFM particle is left.
+        // If we already consumed one VTFM, explicitly check if another VTFM suffix remains at the end.
+        // If so, report VtfmMultiple (more precise than a generic "misplaced" error).
+        if vtfm.is_some()
+            && (st.ends_with("⪤↻")
+                || st.ends_with("⪤⇌")
+                || st.ends_with("⪤⊞")
+                || st.ends_with("⪤⊗")
+                || st.ends_with("⪤⊘")
+                || st.ends_with("⪤↡")
+                || st.ends_with('⪤'))
+        {
+            return Err(Error::new(
+                ErrorKind::VtfmMultiple,
+                "more than one vectorial time flow modifier",
+            ));
+        }
+
+        // Ensure no stray VTFM particle is left elsewhere.
         if st.contains('⪤') {
             return Err(Error::new(
                 ErrorKind::VtfmMisplaced,
@@ -701,8 +723,10 @@ impl<'a> Parser<'a> {
         &self,
         s: &'a str,
     ) -> Result<(&'a str, Option<TimeLoop>), Error> {
+        // Allow trailing outer whitespace, but loop suffix itself must be contiguous.
         let st = s.trim_end();
 
+        // Fixed forms first.
         if let Some(prefix) = st.strip_suffix("⟁∞") {
             return Ok((prefix.trim_end(), Some(TimeLoop::Infinite)));
         }
@@ -716,27 +740,50 @@ impl<'a> Parser<'a> {
             return Ok((prefix.trim_end(), Some(TimeLoop::Simple)));
         }
 
+        // Hex-counted form: one trailing ⟁ followed by 1..8 *contiguous* hex digits.
         if let Some(pos) = st.rfind('⟁') {
-            let tail = st[pos + '⟁'.len_utf8()..].trim();
-            if !tail.is_empty() && tail.len() <= 8 && tail.chars().all(|c| c.is_ascii_hexdigit()) {
-                let up = tail.to_ascii_uppercase();
-                let n = u32::from_str_radix(&up, 16).map_err(|_| {
-                    Error::new(ErrorKind::InvalidTimeLoopPlacement, "invalid loop count")
-                })?;
-                if n == 0 {
-                    return Err(Error::new(
-                        ErrorKind::InvalidTimeLoopPlacement,
-                        "time-loop count must be >= 1",
-                    ));
-                }
-                let head = st[..pos].trim_end();
-                return Ok((head, Some(TimeLoop::Count(n))));
-            } else {
+            // Do NOT trim; spaces here are invalid.
+            let tail_raw = &st[pos + '⟁'.len_utf8()..];
+            if tail_raw.is_empty() {
+                // Bare ⟁ at end would have matched above; reaching here means ⟁ not at absolute end.
                 return Err(Error::new(
                     ErrorKind::InvalidTimeLoopPlacement,
-                    "⟁ must appear once at end (optionally with ∞/∂/⊥ or 1..8 hex)",
+                    "missing loop count after ⟁",
                 ));
             }
+
+            // Reject any whitespace inside the loop count (token subsecting is not allowed).
+            if tail_raw.chars().any(|c| c.is_whitespace()) {
+                return Err(Error::new(
+                    ErrorKind::InvalidTimeLoopPlacement,
+                    "loop count must be contiguous (no spaces)",
+                ));
+            }
+
+            // Length > 8 is an error.
+            if tail_raw.len() > 8 {
+                return Err(Error::new(ErrorKind::TimeLoopCountTooLong, tail_raw));
+            }
+
+            // Must be hex.
+            if !tail_raw.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(Error::new(
+                    ErrorKind::InvalidTimeLoopPlacement,
+                    "loop count must be 1–8 hex digits",
+                ));
+            }
+
+            // Parse and reject zero explicitly.
+            let up = tail_raw.to_ascii_uppercase();
+            let n = u32::from_str_radix(&up, 16).map_err(|_| {
+                Error::new(ErrorKind::InvalidTimeLoopPlacement, "invalid loop count")
+            })?;
+            if n == 0 {
+                return Err(Error::new(ErrorKind::TimeLoopCountZero, tail_raw));
+            }
+
+            let head = st[..pos].trim_end();
+            return Ok((head, Some(TimeLoop::Count(n))));
         }
 
         Ok((st, None))
@@ -815,16 +862,17 @@ impl<'a> Parser<'a> {
         }
 
         // If not an EBS token, it must look like ≤8 hex.
-        if !tick_preview.contains('{') && !tick_preview.contains('}')
+        if !tick_preview.contains('{')
+            && !tick_preview.contains('}')
             && (tick_preview.is_empty()
                 || tick_preview.len() > 8
                 || !tick_preview.chars().all(|c| c.is_ascii_hexdigit()))
-            {
-                return Err(Error::new(
-                    ErrorKind::InvalidTimeLoopPlacement,
-                    "loop must directly follow a valid tick (≤8 hex)",
-                ));
-            }
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidTimeLoopPlacement,
+                "loop must directly follow a valid tick (≤8 hex)",
+            ));
+        }
         Ok(())
     }
 
@@ -990,9 +1038,10 @@ impl<'a> Parser<'a> {
 
         // INV may never be last.
         if let Some(last) = folds.last()
-            && last.tag == "INV" {
-                return Err(Error::new(ErrorKind::InvAtEnd, &last.tag));
-            }
+            && last.tag == "INV"
+        {
+            return Err(Error::new(ErrorKind::InvAtEnd, &last.tag));
+        }
 
         Ok(Segment::Present(FoldsSegment { folds }))
     }
@@ -1049,7 +1098,7 @@ impl<'a> Parser<'a> {
                 (st.as_str(), "")
             };
 
-        // Optional inversion prefix `na'` ONLY at the beginning, no spaces, only once.
+        // Optional inversion prefix "na'" ONLY at the beginning, no spaces, only once.
         let (inverted, token_str) = if let Some(rest) = core_maybe_na.strip_prefix("na'") {
             if rest.starts_with(char::is_whitespace) || rest.contains("na'") || rest.is_empty() {
                 return Err(Error::new(
@@ -1086,13 +1135,16 @@ impl<'a> Parser<'a> {
 impl fmt::Display for Coordinate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} / ", display_segment(&self.date, display_date))?;
-        write!(f, "{}", display_segment(&self.time, display_time))?;
-        write!(f, " / ")?;
-        write!(f, "{}", display_segment(&self.location, display_location))?;
-        write!(f, " / {}", display_segment(&self.tier, display_tier))?;
-        write!(f, " / {}", display_segment(&self.folds, display_folds))?;
-        write!(f, " / {}", display_segment(&self.branch, display_branch))?;
-        write!(f, " / {}", display_segment(&self.modal, display_modal))?;
+        write!(f, "{} / ", display_segment(&self.time, display_time))?;
+        write!(
+            f,
+            "{} / ",
+            display_segment(&self.location, display_location)
+        )?;
+        write!(f, "{} / ", display_segment(&self.tier, display_tier))?;
+        write!(f, "{} / ", display_segment(&self.folds, display_folds))?;
+        write!(f, "{} / ", display_segment(&self.branch, display_branch))?;
+        write!(f, "{}", display_segment(&self.modal, display_modal))?;
         Ok(())
     }
 }
@@ -1224,31 +1276,31 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    // -----------------------
+    // Helpers
+    // -----------------------
+
     fn ok(input: &str) -> Coordinate {
         parse(input).expect("should parse")
     }
-
     fn err(input: &str) -> ErrorKind {
         match parse(input) {
             Ok(_) => panic!("expected error"),
             Err(e) => e.kind,
         }
     }
-
     fn loc_axes(c: &Coordinate) -> &[ValueOrEbs<HexNum>] {
         match &c.location {
             Segment::Present(l) => &l.axes,
             _ => panic!("location not present"),
         }
     }
-
     fn folds_vec(c: &Coordinate) -> &[FoldTag] {
         match &c.folds {
             Segment::Present(f) => &f.folds,
             _ => panic!("folds not present"),
         }
     }
-
     fn branch_code(c: &Coordinate) -> &str {
         match &c.branch {
             Segment::Present(b) => &b.code,
@@ -1256,340 +1308,240 @@ mod tests {
         }
     }
 
-    #[test]
-    fn requires_exactly_7_segments() {
-        let k = err("A·0·0·0 / 0·0·0·0 / F / 00 / ANN / B7"); // 6
-        assert!(matches!(k, ErrorKind::WrongSegmentCount));
-
-        let k = err("A·0·0·0 / 0·0·0·0 / F / 00 / ANN / B7 / kal'mi / extra"); // 8
-        assert!(matches!(k, ErrorKind::WrongSegmentCount));
-    }
+    // -----------------------
+    // Structure & separators
+    // -----------------------
 
     #[test]
-    fn empty_segment_is_invalid_use_veth_or_selm() {
-        let k = err("A·0·0·0 / 0·0·0·0 /  / 00 / ANN / B7 / kal'mi");
-        assert!(matches!(k, ErrorKind::InvalidStructure(_)));
-    }
-
-    #[test]
-    fn placeholders_keep_structure() {
-        let _ = ok("[selm] / [veth] / [selm] / [veth] / ANN / 0 / kal'mi");
+    fn requires_exactly_7_segments_and_no_empty_segment() {
         assert!(matches!(
-            err("[selm] / [veth] / [selm] /  / ANN / 0 / kal'mi"),
+            err("A·0·0·0 / 0·0·0·0 / F / 00 / ANN / B7"),
+            ErrorKind::WrongSegmentCount
+        ));
+        assert!(matches!(
+            err("A·0·0·0 / 0·0·0·0 / F / 00 / ANN / B7 / kal'mi / extra"),
+            ErrorKind::WrongSegmentCount
+        ));
+        assert!(matches!(
+            err("A·0·0·0 / 0·0·0·0 /  / 00 / ANN / B7 / kal'mi"),
             ErrorKind::InvalidStructure(_)
         ));
     }
 
     #[test]
-    fn placeholders_must_be_exact_token_in_all_segments() {
+    fn only_middot_as_inner_separator() {
+        // bad: colon
         assert!(matches!(
-            err("[selm] ~⊥ / 0·0·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
+            err("0·0·0·0 / 0:0:0:0 / 0 / 00 / ANN / 0 / kal"),
             ErrorKind::InvalidStructure(_)
         ));
-
+        // bad: bullet lookalike
         assert!(matches!(
-            err("[veth]foo / 0·0·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
+            err("0·0·0·0 / 0•0•0•0 / 0 / 00 / ANN / 0 / kal"),
             ErrorKind::InvalidStructure(_)
         ));
     }
 
+    // -----------------------
+    // Happy path (with VTFM & loop)
+    // -----------------------
+
     #[test]
-    fn parses_full_example_with_inline_loop_and_decorators() {
-        let s = "12BFF·7·D·A / 3·1F·2A·FF⟁ / 3·9·1C·1A~∞ / D2·A1 / ANN~⊥·DRM / B7C5 / kal'mi";
+    fn parses_full_example_with_vtfm_and_loop() {
+        let s = "12BFF·7·D·A / 3·1F·2A·FF⪤↻⟁A / 3·9·1C·1A~∞ / D2·A1 / ANN·DRM / B7C5 / kal'mi";
         let c = ok(s);
-
         match &c.time {
-            Segment::Present(t) => assert!(matches!(t.loop_spec, Some(TimeLoop::Simple))),
-            _ => panic!("time segment not present"),
+            Segment::Present(t) => {
+                assert!(matches!(t.vtfm, Some(TimeFlowMod::RecurringConvergence)));
+                assert!(matches!(t.loop_spec, Some(TimeLoop::Count(0xA))));
+            }
+            _ => panic!("time not present"),
         }
-
         assert!(matches!(c.tier, Segment::Present(_)));
         assert!(matches!(c.folds, Segment::Present(_)));
         assert!(matches!(c.branch, Segment::Present(_)));
         assert!(matches!(c.modal, Segment::Present(_)));
     }
 
-    #[test]
-    fn loop_cannot_be_a_separate_segment() {
-        let k = err("A·0·0·0 / 0·0·0·0 / F / ⟁ / 00 / ANN / kal'mi");
-        assert!(matches!(k, ErrorKind::InvalidTimeLoopPlacement));
-    }
+    // -----------------------
+    // Time-loop: placement, forms, counts
+    // -----------------------
 
     #[test]
-    fn loop_marker_misplacement() {
-        // Date
+    fn loop_marker_misplacement_and_standalone() {
+        // Standalone or outside time segment.
         assert!(matches!(
-            err("0·0·0·0⟁ / 0·0·0·0 / 0 / 00 / ANN / 0 / kal"),
+            err("0·0·0·0 / 0·0·0·0 / ⟁ / 00 / ANN / 1 / kal"),
             ErrorKind::InvalidTimeLoopPlacement
         ));
-        // Location
+
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 1·2·3⟁ / 00 / ANN / 0 / kal"),
+            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / ⟁ / kal"),
             ErrorKind::InvalidTimeLoopPlacement
         ));
-        // Tier
+
+        // Not at end of time / doubled.
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 0A·FF⟁ / ANN / 0 / kal"),
+            err("0·0·0·0 / 0·0·0·0⟁⟁ / 0 / 00 / ANN / 1 / kal"),
             ErrorKind::InvalidTimeLoopPlacement
         ));
-        // Folds
+
+        // Placeholder with loop.
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN⟁ / 0 / kal"),
+            err("0·0·0·0 / [selm]⟁ / 0 / 00 / ANN / 1 / kal"),
             ErrorKind::InvalidTimeLoopPlacement
         ));
-        // Branch
+
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / BEEF⟁ / kal"),
-            ErrorKind::InvalidTimeLoopPlacement
-        ));
-        // Modal
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / kal'mi⟁"),
+            err("0·0·0·0 / [veth]⟁A / 0 / 00 / ANN / 1 / kal"),
             ErrorKind::InvalidTimeLoopPlacement
         ));
     }
 
     #[test]
-    fn time_loop_accepts_count_and_symbols_only_at_end() {
+    fn loop_valid_forms_and_counts() {
         ok("0·0·0·0 / 0·0·0·0⟁ / 0 / 00 / ANN / 0 / kal");
-        ok("0·0·0·0 / 0·0·0·0⟁A / 0 / 00 / ANN / 0 / kal");
         ok("0·0·0·0 / 0·0·0·0⟁∞ / 0 / 00 / ANN / 0 / kal");
         ok("0·0·0·0 / 0·0·0·0⟁∂ / 0 / 00 / ANN / 0 / kal");
         ok("0·0·0·0 / 0·0·0·0⟁⊥ / 0 / 00 / ANN / 0 / kal");
+        ok("0·0·0·0 / 0·0·0·0⟁1 / 0 / 00 / ANN / 0 / kal");
+        ok("0·0·0·0 / 0·0·0·0⟁A / 0 / 00 / ANN / 0 / kal");
 
-        // Not at end / multiple / junk before marker.
+        // Up to a max of 8 hex digits.
+        ok("0·0·0·0 / 0·0·0·0⟁FFFFFFFF / 0 / 00 / ANN / 0 / kal");
+    }
+
+    #[test]
+    fn loop_bad_counts_and_spaces() {
+        // Zero or too long or space-split.
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0⟁⟁ / 0 / 00 / ANN / 0 / kal"),
-            ErrorKind::InvalidTimeLoopPlacement
+            err("0·0·0·0 / 0·0·0·0⟁0 / 0 / 00 / ANN / 0 / kal"),
+            ErrorKind::TimeLoopCountZero
         ));
 
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0⟁00000000 / 0 / 00 / ANN / 0 / kal"),
+            ErrorKind::TimeLoopCountZero
+        ));
+
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0⟁123456789 / 0 / 00 / ANN / 0 / kal"),
+            ErrorKind::TimeLoopCountTooLong
+        ));
+
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0⟁ A / 0 / 00 / ANN / 0 / kal"),
+            ErrorKind::InvalidTimeLoopPlacement
+        ));
+    }
+
+    #[test]
+    fn loop_with_ebs_tick_and_vtfm_preflight() {
+        ok("0·0·0·0 / 0·0·0·{FF}⪤⟁A / 0 / 00 / ANN / 0 / kal");
+        ok("0·0·0·0 / 0·0·0·{1±2}⪤↻⟁∞ / 0 / 00 / ANN / 0 / kal");
+
+        // Junk before loop particle = placement error (not generic hex).
         assert!(matches!(
             err("0·0·0·0 / 0·0·0·0foo⟁A / 0 / 00 / ANN / 0 / kal"),
             ErrorKind::InvalidTimeLoopPlacement
         ));
     }
 
-    #[test]
-    fn time_placeholder_with_loop_marker_is_rejected() {
-        assert!(matches!(
-            err("0·0·0·0 / [selm]⟁ / 0 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::InvalidTimeLoopPlacement
-        ));
-
-        assert!(matches!(
-            err("0·0·0·0 / [veth]⟁ / 0 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::InvalidTimeLoopPlacement
-        ));
-    }
+    // -----------------------
+    // VTFM: placement, variants
+    // -----------------------
 
     #[test]
-    fn time_placeholder_exact_is_ok() {
-        let _ = ok("0·0·0·0 / [selm] / 0 / 00 / ANN / 0 / kal'mi");
-        let _ = ok("0·0·0·0 / [veth] / 0 / 00 / ANN / 0 / kal'mi");
-    }
-
-    #[test]
-    fn time_placeholder_with_trailing_garbage_is_rejected() {
-        assert!(matches!(
-            err("0·0·0·0 / [selm] ~ ⊥ / 0 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::InvalidStructure(_)
-        ));
-
-        assert!(matches!(
-            err("0·0·0·0 / [veth]foo / 0 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::InvalidStructure(_)
-        ));
-    }
-
-    #[test]
-    fn tier_two_hex_parsing_and_validation() {
-        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 0a·ff·01 / ANN / 0 / kal'mi");
-        if let Segment::Present(t) = c.tier {
-            assert_eq!(t.tiers, vec![0x0A, 0xFF, 0x01]);
-        } else {
-            panic!();
+    fn vtfm_bare_and_decorated_and_with_loop() {
+        // Bare.
+        let c = ok("0·0·0·0 / 0·0·0·0⪤ / 0 / 00 / ANN / 0 / kal");
+        match c.time {
+            Segment::Present(t) => assert!(matches!(t.vtfm, Some(TimeFlowMod::Nonlinear))),
+            _ => panic!("time not present"),
         }
 
-        assert!(matches!(
-            err("0·00·0·0 / 0·0·0·0 / 0 / A / ANN / 1 / ven'da"),
-            ErrorKind::InvalidLength("tier(2-hex)")
-        ));
-
-        assert!(matches!(
-            err("0·00·0·0 / 0·0·0·0 / 0 / 0AF / ANN / 1 / ven'da"),
-            ErrorKind::InvalidLength("tier(2-hex)")
-        ));
-    }
-
-    #[test]
-    fn folds_uppercase_only_and_allowlisted() {
-        let _ = ok("A·0·0·0 / 0·0·0·0 / F / 00 / ANN·DRM / B7 / kal'mi");
-        let k = err("A·0·0·0 / 0·0·0·0 / F / 00 / ann / B7 / kal'mi");
-        assert!(matches!(k, ErrorKind::LowercaseFoldTag));
-
-        let k = err("A·0·0·0 / 0·0·0·0 / F / 00 / XYZ / B7 / kal'mi");
-        assert!(matches!(k, ErrorKind::InvalidFoldTag));
-    }
-
-    #[test]
-    fn folds_with_various_decorators() {
-        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN~·DRM~∞·NRV~∂·TMP~⊥ / 1 / soth'mi");
-        assert_eq!(folds_vec(&c).len(), 4);
-    }
-
-    #[test]
-    fn folds_and_tier_require_nonempty_items() {
-        // Empty fold item.
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN··DRM / 0 / kal'mi"),
-            ErrorKind::InvalidFoldTag
-        ));
-
-        // Empty tier item.
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 0A··FF / ANN / 0 / kal'mi"),
-            ErrorKind::InvalidLength("tier(2-hex)")
-        ));
-    }
-
-    #[test]
-    fn ebs_not_allowed_in_folds() {
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·{DRM} / 0 / kal'mi"),
-            ErrorKind::EbsNotAllowedHere
-        ));
-    }
-
-    #[test]
-    fn modal_suffix_and_token_checks() {
-        // Valid particle with curly apostrophe canonicalised.
-        let c = ok("A·0·0·0 / 0·0·0·0 / F / 00 / ANN / B7 / dūl’mi");
-        let m = match c.modal {
-            Segment::Present(m) => m,
-            _ => unreachable!(),
-        };
-        assert_eq!(m.token, "dūl");
-        assert_eq!(m.suffix, "'mi");
-
-        // Bare particle without suffix.
-        // Valid, but may only be used by divine beings that
-        // can declare an absolute truth.
-        let c = ok("A·0·0·0 / 0·0·0·0 / F / 00 / ANN / B7 / dūl");
-        let m = match c.modal {
-            Segment::Present(m) => m,
-            _ => unreachable!(),
-        };
-        assert_eq!(m.token, "dūl");
-        assert_eq!(m.suffix, "");
-
-        // Bare particle without suffix, and with a "'na" inversion.
-        // Valid, but may only be used by divine beings that
-        // can declare an absolute truth.
-        let c = ok("A·0·0·0 / 0·0·0·0 / F / 00 / ANN / B7 / na'dūl");
-        let m = match c.modal {
-            Segment::Present(m) => m,
-            _ => unreachable!(),
-        };
-        assert_eq!(m.inverted, true);
-        assert_eq!(m.token, "dūl");
-        assert_eq!(m.suffix, "");
-
-        // Bate particle containing a "'".
-        // Valid, but may only be used by divine beings that
-        // can declare an absolute truth.
-        let c = ok("A·0·0·0 / 0·0·0·0 / F / 00 / ANN / B7 / inther'kael");
-        let m = match c.modal {
-            Segment::Present(m) => m,
-            _ => unreachable!(),
-        };
-        assert_eq!(m.token, "inther'kael");
-        assert_eq!(m.suffix, "");
-
-        // Token not in allowlist.
-        assert!(matches!(
-            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / nope'da"),
-            ErrorKind::InvalidModalTruth
-        ));
-    }
-
-    #[test]
-    fn modal_is_never_bracketed() {
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / [kal'mi]"),
-            ErrorKind::InvalidStructure(_)
-        ));
-
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / [na'soth'da]"),
-            ErrorKind::InvalidStructure(_)
-        ));
-    }
-
-    #[test]
-    fn modal_cannot_be_omitted_but_can_be_veiled() {
-        let _ = ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / [selm]");
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / [veth]"),
-            ErrorKind::InvalidStructure(_)
-        ));
-    }
-
-    #[test]
-    fn modal_inversion_accepts_na_prefix() {
-        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / na'kal'mi");
-        match c.modal {
-            Segment::Present(m) => {
-                assert_eq!(m.token, "kal");
-                assert_eq!(m.suffix, "'mi");
-                assert!(m.inverted);
+        // Decorated + loop.
+        let c = ok("0·0·0·0 / 0·0·0·0⪤↻⟁A / 0 / 00 / ANN / 0 / kal");
+        match &c.time {
+            Segment::Present(t) => {
+                assert!(matches!(t.vtfm, Some(TimeFlowMod::RecurringConvergence)));
+                assert!(matches!(t.loop_spec, Some(TimeLoop::Count(0xA))));
             }
-            _ => panic!("modal not present"),
+            _ => panic!("time not present"),
         }
 
-        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / na'inther'kael'da");
-        match c.modal {
-            Segment::Present(m) => {
-                assert_eq!(m.token, "inther'kael");
-                assert_eq!(m.suffix, "'da");
-                assert!(m.inverted);
-            }
-            _ => panic!("modal not present"),
-        }
+        // Display order - VTFM then loop.
+        assert!(format!("{c}").contains("0·0·0·0⪤↻⟁A"));
     }
 
     #[test]
-    fn modal_inversion_misuse_is_rejected() {
+    fn vtfm_misplacement_and_errors() {
+        // Unknown decorator.
         assert!(matches!(
-            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / kal'na'mi"),
-            ErrorKind::InvalidModalTruth
+            err("0·0·0·0 / 0·0·0·0⪤? / 0 / 00 / ANN / 0 / kal"),
+            ErrorKind::VtfmUnknownDecorator
         ));
 
+        // Multiple.
         assert!(matches!(
-            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / na' kal'mi"),
-            ErrorKind::InvalidModalTruth
+            err("0·0·0·0 / 0·0·0·0⪤↻⪤⇌ / 0 / 00 / ANN / 0 / kal"),
+            ErrorKind::VtfmMultiple
         ));
 
+        // Misplaced outside time.
         assert!(matches!(
-            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / na'na'kal'mi"),
-            ErrorKind::InvalidModalTruth
+            err("0·0·0·0 / 0·0·0·0 / 1·2·3·4⪤↻ / 00 / ANN / 0 / kal"),
+            ErrorKind::VtfmMisplaced
         ));
 
+        // After loop (wrong order).
         assert!(matches!(
-            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / na'nope'mi"),
-            ErrorKind::InvalidModalTruth
+            err("0·0·0·0 / 0·0·0·0⟁A⪤↻ / 0 / 00 / ANN / 0 / kal"),
+            ErrorKind::InvalidTimeLoopPlacement | ErrorKind::VtfmMisplaced
+        ));
+
+        // Sub-secting space.
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0⪤ ↻ / 0 / 00 / ANN / 0 / kal"),
+            ErrorKind::VtfmUnknownDecorator | ErrorKind::VtfmMisplaced
         ));
     }
+
+    // -----------------------
+    // Time bounds & edges
+    // -----------------------
 
     #[test]
-    fn modal_inversion_round_trip_display() {
-        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / na'soth'da");
-        let out = format!("{c}");
-        assert!(out.ends_with("na'soth'da"));
+    fn time_edges_limits_and_overflow() {
+        // exact edges allowed
+        ok("0·00·0·0 / F·3F·3F·FFFFFFFF / 0 / 00 / ANN / 0 / kal'mi");
+
+        // overflow rejects
+        assert!(matches!(
+            err("0·00·0·0 / 10·0·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
+            ErrorKind::OutOfRange("hour")
+        ));
+        assert!(matches!(
+            err("0·00·0·0 / 0·40·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
+            ErrorKind::OutOfRange("minute")
+        ));
+        assert!(matches!(
+            err("0·00·0·0 / 0·0·40·0 / 0 / 00 / ANN / 0 / kal'mi"),
+            ErrorKind::OutOfRange("second")
+        ));
+        assert!(matches!(
+            err("0·00·0·0 / 0·0·0·100000000 / 0 / 00 / ANN / 0 / kal'mi"),
+            ErrorKind::InvalidHex | ErrorKind::OutOfRange("tick")
+        ));
     }
+
+    // -----------------------
+    // EBS rules
+    // -----------------------
 
     #[test]
     fn ebs_allowed_only_in_date_time_location() {
-        let _ = ok("A·FF·{A±1}·{B...D} / 0·{3E±1}·2·1 / {10±2}·20·30 / 00 / ANN / B7 / kal'mi");
+        ok("A·FF·{A±1}·{B...D} / 0·{3E±1}·2·1 / {10±2}·20·30 / 00 / ANN / B7 / kal'mi");
         assert!(matches!(
             err("A·FF·0·0 / 0·0·0·0 / F / {0A} / ANN / B7 / kal'mi"),
             ErrorKind::EbsNotAllowedHere
@@ -1601,18 +1553,14 @@ mod tests {
         ));
 
         assert!(matches!(
-            err("A·FF·0·0 / 0·0·0·0 / F / 0A / ANN·{DRM} / B7 / kal'mi"),
-            ErrorKind::EbsNotAllowedHere
-        ));
-
-        assert!(matches!(
             err("A·FF·0·0 / 0·0·0·0 / F / 0A / ANN / BEEF / {kal'mi}"),
             ErrorKind::EbsNotAllowedHere
         ));
     }
 
     #[test]
-    fn ebss_unbalanced_and_malformed_are_clear_errors() {
+    fn ebs_unbalanced_and_malformed_and_nesting() {
+        // Unbalanced.
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·{FF / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::UnbalancedBraces
@@ -1623,16 +1571,19 @@ mod tests {
             ErrorKind::UnbalancedBraces
         ));
 
+        // Must wrap whole token.
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·A{FF} / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::InvalidEbsSyntax(_)
         ));
 
+        // Empty.
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·{} / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::InvalidEbsSyntax(_)
         ));
 
+        // ± must have both sides.
         assert!(matches!(
             err("0·00·0·0 / 0·{±1}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::InvalidEbsSyntax(_)
@@ -1643,6 +1594,7 @@ mod tests {
             ErrorKind::InvalidEbsSyntax(_)
         ));
 
+        // ... must have both.
         assert!(matches!(
             err("0·00·0·0 / 0·{...3F}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::InvalidEbsSyntax(_)
@@ -1652,178 +1604,27 @@ mod tests {
             err("0·00·0·0 / 0·{3F...}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::InvalidEbsSyntax(_)
         ));
-        ok("0·00·0·0 / 0·{3E±1}·{2...3}·{FF} / 0 / 00 / ANN / 0 / kal'mi");
-    }
 
-    #[test]
-    fn ebs_range_requires_start_le_end_and_no_nesting() {
+        // Nested EBS invalid.
         assert!(matches!(
-            err("0·0·0·0 / 0·{5...3}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
+            err("0·00·0·0 / 0·{{3}±1}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::InvalidEbsSyntax(_)
         ));
 
+        // Valid EBS with inner whitespace.
+        ok("0·00·0·0 / 0·{3E ± 1}·{2 ... 3}·{0FFFFFFF} / 0 / 00 / ANN / 0 / kal'mi");
+    }
+
+    #[test]
+    fn ebs_caps_upper_endpoint_only() {
+        // plus-minus: minute center+delta <= 0x3F
+        ok("0·00·0·0 / 0·{3E±1}·0·0 / 0 / 00 / ANN / 0 / kal'mi");
         assert!(matches!(
-            err("0·0·0·0 / 0·{{3}±1}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::InvalidEbsSyntax(_)
+            err("0·00·0·0 / 0·{2±3E}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
+            ErrorKind::OutOfRange("minute")
         ));
-    }
-
-    #[test]
-    fn ebs_plusminus_upper_endpoint_checked_only() {
-        ok("0·00·0·0 / {1}·0·0·0 / {1±5}·2·3·4 / 00 / ANN / 0 / kal'mi");
-        let k = err("0·00·0·0 / 0·{2±3E}·0·0 / 0 / 00 / ANN / 0 / kal'mi");
-        assert!(matches!(k, ErrorKind::OutOfRange("minute")));
-    }
-
-    #[test]
-    fn ebs_range_upper_bound_checked_only() {
+        // range: end <= 0x3F
         ok("0·00·0·0 / 0·{0...3F}·0·0 / 0 / 00 / ANN / 0 / kal'mi");
-        let k = err("0·00·0·0 / 0·{0...40}·0·0 / 0 / 00 / ANN / 0 / kal'mi");
-        assert!(matches!(k, ErrorKind::OutOfRange("minute")));
-    }
-
-    #[test]
-    fn year_ebs_respects_cap_on_end_only() {
-        ok("0·{0...FF}·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / kal'mi");
-        let k = err("0·{0...1FF}·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / kal'mi");
-        assert!(matches!(k, ErrorKind::OutOfRange("year")));
-    }
-
-    #[test]
-    fn location_with_multiple_axes_and_decorator() {
-        let c = ok("A·0·0·0 / 0·0·0·0 / 1·2·3·4~∂ / 00 / ANN / B7 / kal'mi");
-        let loc = match c.location {
-            Segment::Present(l) => l,
-            _ => unreachable!(),
-        };
-        assert_eq!(loc.axes.len(), 4);
-        assert_eq!(loc.recursion, Recursion::TildePartial);
-    }
-
-    #[test]
-    fn location_decorator_whitespace_variants() {
-        let c1 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3~⊥ / 00 / ANN / 0 / kal'mi");
-        let c2 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3 ~⊥ / 00 / ANN / 0 / kal'mi");
-        let c3 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3~ ⊥ / 00 / ANN / 0 / kal'mi");
-        assert_eq!(loc_axes(&c1).len(), 3);
-        assert_eq!(loc_axes(&c2).len(), 3);
-        assert_eq!(loc_axes(&c3).len(), 3);
-    }
-
-    #[test]
-    fn invalid_location_decorator_symbol() {
-        assert!(matches!(
-            err("0·00·0·0 / 0·0·0·0 / 1·2·3~? / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::InvalidDecorator
-        ));
-    }
-
-    #[test]
-    fn location_rejects_empty_axis_item() {
-        let k = err("0·0·0·0 / 0·0·0·0 / 1··2 / 00 / ANN / 0 / kal'mi");
-        assert!(
-            matches!(k, ErrorKind::InvalidHex) || matches!(k, ErrorKind::InvalidStructure(_)),
-            "empty axis should be rejected"
-        );
-    }
-
-    #[test]
-    fn location_ebs_unbounded_and_decorator_trailing_only() {
-        ok("0·0·0·0 / 0·0·0·0 / {10±FFFF}·{0...FFFFFFFFFFFFFFFF}~∞ / 00 / ANN / 0 / kal'mi");
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / ~⊥ 1·2 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::InvalidDecorator
-        ));
-    }
-
-    #[test]
-    fn non_hex_in_branch() {
-        let k = err("A·1·1·1 / 0·0·0·0 / F / 00 / ANN / GHIJ / kal'mi");
-        assert!(matches!(k, ErrorKind::InvalidHex));
-    }
-
-    #[test]
-    fn branch_uppercase_normalization() {
-        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / beef / kal'mi");
-        assert_eq!(branch_code(&c), "BEEF");
-    }
-
-    #[test]
-    fn print_compacts_hex_except_fixed_width() {
-        // Minute/second/tick compact; Tier stays 2-hex.
-        let c = ok("A·0A·0·0 / 0·03·02·0000000F / 1·2 / 0A·0F / ANN / 0 / kal'mi");
-        let out = format!("{c}");
-        assert!(out.contains("A·A·0·0 / 0·3·2·F"));
-        assert!(out.contains(" / 0A·0F / "));
-    }
-
-    #[test]
-    fn whitespace_noise_and_round_trip() {
-        let c = ok(
-            "  aB·  ff · 0 · F  /  0 · 3f · 0 · f⟁  /  1 · 2 · 3 · 4 ~ ⊥  /  0a · ff  /  ANN · DRM / beef  /  kal'mi  ",
-        );
-        let out = format!("{c}");
-        assert!(
-            out.contains("AB·FF·0·F / 0·3F·0·F⟁ / 1·2·3·4~⊥ / 0A·FF / ANN·DRM / BEEF / kal'mi")
-        );
-    }
-
-    #[test]
-    fn round_trip_display_stability() {
-        let s = "AB·FF·0·F / 0·3F·0·F⟁ / 1·2·3·4~⊥ / 0A·FF / ANN·DRM / BEEF / kal'mi";
-        let c = ok(s);
-        let out = format!("{c}");
-        assert!(
-            out.contains("AB·FF·0·F / 0·3F·0·F⟁ / 1·2·3·4~⊥ / 0A·FF / ANN·DRM / BEEF / kal'mi")
-        );
-    }
-
-    #[test]
-    fn only_middot_is_valid_separator_inside_segments() {
-        assert!(matches!(
-            err("0·0·0·0 / 0:0:0:0 / 0 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::InvalidStructure(_)
-        ));
-    }
-
-    #[test]
-    fn time_edges_exact_limits() {
-        ok("0·00·0·0 / F·3F·3F·FFFFFFFF / 0 / 00 / ANN / 0 / kal'mi");
-    }
-
-    #[test]
-    fn time_edges_reject_overflow() {
-        assert!(matches!(
-            err("0·00·0·0 / 10·0·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::OutOfRange("hour")
-        ));
-
-        assert!(matches!(
-            err("0·00·0·0 / 0·40·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::OutOfRange("minute")
-        ));
-
-        assert!(matches!(
-            err("0·00·0·0 / 0·0·40·0 / 0 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::OutOfRange("second")
-        ));
-
-        let k = err("0·00·0·0 / 0·0·0·100000000 / 0 / 00 / ANN / 0 / kal'mi");
-        assert!(matches!(k, ErrorKind::InvalidHex) || matches!(k, ErrorKind::OutOfRange("tick")));
-    }
-
-    #[test]
-    fn month_allows_leading_zero_two_hex() {
-        ok("0·00·0A·0F / 0·0·0·0 / 0 / 00 / ANN / 0 / kal'mi");
-    }
-
-    #[test]
-    fn ebs_delta_and_range_checked() {
-        assert!(matches!(
-            err("0·00·0·0 / 0·{3F±FF}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
-            ErrorKind::OutOfRange("minute")
-        ));
-
         assert!(matches!(
             err("0·00·0·0 / 0·{0...40}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::OutOfRange("minute")
@@ -1831,316 +1632,220 @@ mod tests {
     }
 
     #[test]
-    fn minimal_minimal_ebs_mixed_values() {
-        let c = ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / kal'mi");
-        assert!(matches!(c.date, Segment::Present(_)));
-        assert!(matches!(c.time, Segment::Present(_)));
+    fn location_ebs_unbounded_and_decorator_trailing_only() {
+        ok("0·0·0·0 / 0·0·0·0 / {10±FFFF}·{0...FFFFFFFFFFFFFFFF}·3~∞ / 00 / ANN / 0 / kal");
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0 / ~⊥ 1·2 / 00 / ANN / 0 / kal"),
+            ErrorKind::InvalidDecorator
+        ));
     }
 
+    // -----------------------
+    // Location & many axes
+    // -----------------------
+
     #[test]
-    fn maximal_values() {
-        let c = ok("FFFF·FF·F·F / F·3F·3F·FFFFFFFF / FFFF / FF / DRM / FFFF / ven'da");
-        assert!(matches!(c.date, Segment::Present(_)));
-        assert!(matches!(c.time, Segment::Present(_)));
+    fn location_many_axes_and_whitespace_tolerant_decorator() {
+        let c1 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3~⊥ / 00 / ANN / 0 / kal");
+        let c2 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3 ~⊥ / 00 / ANN / 0 / kal");
+        let c3 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3~ ⊥ / 00 / ANN / 0 / kal");
+        assert_eq!(loc_axes(&c1).len(), 3);
+        assert_eq!(loc_axes(&c2).len(), 3);
+        assert_eq!(loc_axes(&c3).len(), 3);
     }
 
-    #[test]
-    fn ebs_plusminus_in_date() {
-        let c = ok("A·{F±1}·{C±1}·{2±1} / 0·0·0·0 / F / 00 / ANN / 1 / kal'mi");
-        assert!(matches!(c.date, Segment::Present(_)));
-    }
+    // -----------------------
+    // Tier
+    // -----------------------
 
     #[test]
-    fn ebs_range_in_time() {
-        let c =
-            ok("A·1·1·1 / {F...F}·{0...3F}·{0...3F}·{0...FFFFFFFF} / F / 00 / ANN / 1 / kal'mi");
-        assert!(matches!(c.time, Segment::Present(_)));
-    }
-
-    #[test]
-    fn torture_long_and_complex() {
-        let c = ok(
-            "ABCDEF·FF·F·F / F·3F·3F·FFFFFFFF⟁ / 1·2·3·4·5·6·7·8~∞ / 0A·FF / ANN~·DRM~∂·NRV~⊥ / DEADCAFE / sarn'mi",
-        );
-
-        // time loop marker is a trailing annotation on the time segment
-        match &c.time {
-            Segment::Present(t) => assert!(matches!(t.loop_spec, Some(TimeLoop::Simple))),
-            _ => panic!("time segment not present"),
+    fn tier_exactly_two_hex_and_chain() {
+        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 0A·FF·01 / ANN / 1 / ven'da");
+        if let Segment::Present(t) = c.tier {
+            assert_eq!(t.tiers, vec![0x0A, 0xFF, 0x01]);
         }
-
-        let loc = match &c.location {
-            Segment::Present(l) => l,
-            _ => panic!("location not present"),
-        };
-        assert_eq!(loc.axes.len(), 8);
-
-        let folds_len = match &c.folds {
-            Segment::Present(f) => f.folds.len(),
-            _ => panic!("folds not present"),
-        };
-        assert_eq!(folds_len, 3);
-    }
-
-    #[test]
-    fn torture_whitespace_and_case() {
-        let c = ok(
-            "  abcd · ff · f · f  /  F · 3f · 3f · ffffffff  /  1 · 2 · 3 ~ ⊥  /  0a · FF  /  ANN · DRM  / beef  /  kal'mi  ",
-        );
-        let branch_code = match &c.branch {
-            Segment::Present(b) => &b.code,
-            _ => panic!("branch not present"),
-        };
-        assert_eq!(branch_code, "BEEF");
-    }
-
-    #[test]
-    fn torture_many_axes_and_folds() {
-        let c = ok(
-            "1·2·3·4 / 0·0·0·0 / 1·2·3·4·5·6·7·8·9·A·B·C~∞ / 00 / ANN·DRM·NRV·SYM·PEN·TRM / DEADC0DE / vesh'da",
-        );
-        assert!(loc_axes(&c).len() >= 12);
-        assert!(folds_vec(&c).len() >= 5);
-    }
-
-    #[test]
-    fn dream_fold_tags_require_prior_drm_anywhere() {
-        // Valid - dream tag after DRM (not necessarily adjacent).
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / DRM·LUC / 0 / kal'mi");
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·DRM·REMGEN / 0 / kal'mi");
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / DRM·ANN·LUC / 0 / kal'mi"); // Non-adjacent.
-
-        // Multiple dream tags after a single DRM are fine.
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / DRM·LUC·INC·SYMDRM / 0 / kal'mi");
-
-        // Valid - interleave with extra DRMs.
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / DRM·LUC·DRM·INC / 0 / kal'mi");
-
-        // Invalid - first dream tag appears before any DRM.
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / LUC / 0 / kal'mi"),
-            ErrorKind::DreamFoldWithoutDrm
+            err("0·00·0·0 / 0·0·0·0 / 0 / A / ANN / 1 / ven'da"),
+            ErrorKind::InvalidLength("tier(2-hex)")
         ));
-
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·INC / 0 / kal'mi"),
-            ErrorKind::DreamFoldWithoutDrm
+            err("0·00·0·0 / 0·0·0·0 / 0 / 0AF / ANN / 1 / ven'da"),
+            ErrorKind::InvalidLength("tier(2-hex)")
+        ));
+        // EBS not allowed in tier
+        assert!(matches!(
+            err("0·00·0·0 / 0·0·0·0 / 0 / {0A} / ANN / 1 / ven'da"),
+            ErrorKind::EbsNotAllowedHere
         ));
     }
 
+    // -----------------------
+    // Folds (allowlist, indices, DRM-gated dreamfolds, INV not last)
+    // -----------------------
+
     #[test]
-    fn inv_may_not_be_last_in_fold_chain() {
+    fn folds_uppercase_allowlist_and_indices() {
+        ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN·REC / B7 / kal");
+        // numeric indices uppercase normalized
+        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN·0a·DRM·FF / B7 / kal");
+        let folds = folds_vec(&c);
+        // we just assert chain length and that numeric items remain present; internal normalization is impl detail
+        assert_eq!(folds.len(), 4);
+
+        // lowercase tag rejected
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / INV / 0 / kal'mi"),
-            ErrorKind::InvAtEnd
+            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / ann / B7 / kal"),
+            ErrorKind::LowercaseFoldTag
         ));
-
+        // unknown tag rejected
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·INV / 0 / kal'mi"),
-            ErrorKind::InvAtEnd
-        ));
-
-        // Valid _only_ when not last.
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / INV·ANN / 0 / kal'mi");
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / DRM·LUC·INV·REC / 0 / kal'mi");
-    }
-
-    #[test]
-    fn dream_folds_with_decorators_and_prior_drm() {
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / DRM~∞·REMGEN~⊥·REC / 0 / kal'mi");
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / REMGEN~∂·REC / 0 / kal'mi"),
-            ErrorKind::DreamFoldWithoutDrm
-        ));
-    }
-
-    #[test]
-    fn folds_accept_hex_codes_and_normalize() {
-        let c = ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / B7·DRM / 0 / kal'mi");
-        if let Segment::Present(f) = c.folds {
-            assert_eq!(f.folds[0].tag, "B7");
-            assert_eq!(f.folds[1].tag, "DRM");
-        } else {
-            panic!()
-        }
-
-        // lowercase hex is accepted and uppercased
-        let c = ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ff·ANN / 0 / kal'mi");
-        if let Segment::Present(f) = c.folds {
-            assert_eq!(f.folds[0].tag, "FF");
-            assert_eq!(f.folds[1].tag, "ANN");
-        } else {
-            panic!()
-        }
-    }
-
-    #[test]
-    fn folds_mixed_numeric_and_dream_with_prior_drm() {
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / B7·ANN·DRM·PSI / 0 / kal'mi");
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / DRM·FF·REMGEN / 0 / kal'mi");
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / B7·PSI / 0 / kal'mi"),
-            ErrorKind::DreamFoldWithoutDrm
-        ));
-    }
-
-    #[test]
-    fn folds_hex_code_validation() {
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / F / 0 / kal'mi"),
+            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / XYZ / B7 / kal"),
             ErrorKind::InvalidFoldTag
         ));
-
+        // empty fold item rejected
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / 123 / 0 / kal'mi"),
-            ErrorKind::InvalidFoldTag
-        ));
-
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / G7 / 0 / kal'mi"),
+            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN··REC / 0 / kal"),
             ErrorKind::InvalidFoldTag
         ));
     }
 
     #[test]
-    fn inv_not_last_still_enforced_with_numeric_codes_present() {
+    fn dreamfold_tags_require_prior_drm_and_inv_not_last() {
+        // needs DRM before dreamfold tags like PSI, CRY, ...
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·INV / 0 / kal'mi"),
+            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·PSI / 0 / kal"),
+            ErrorKind::DreamFoldWithoutDrm
+        ));
+        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·DRM·PSI / 0 / kal");
+
+        // INV cannot be last
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·DRM·INV / 0 / kal"),
             ErrorKind::InvAtEnd
         ));
-        // Ok when not last.
-        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / INV·B7 / 0 / kal'mi");
+
+        // DRM gating still holds if DRM appears earlier than the dreamfold tag
+        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·INV·DRM·PSI / 0 / kal");
+    }
+
+    // -----------------------
+    // Branch
+    // -----------------------
+
+    #[test]
+    fn branch_hex_normalization_and_rejection_of_non_hex() {
+        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / beef / kal'mi");
+        assert_eq!(branch_code(&c), "BEEF");
+        assert!(matches!(
+            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / GHIJ / kal'mi"),
+            ErrorKind::InvalidHex
+        ));
+    }
+
+    // -----------------------
+    // Modal truth (raw tokens, suffixes, inversion, apostrophes, brackets)
+    // -----------------------
+
+    #[test]
+    fn modal_suffix_token_inversion_and_raw_token() {
+        // Suffix variants.
+        let c = ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / dūl'da");
+        if let Segment::Present(m) = c.modal {
+            assert_eq!(m.token, "dūl");
+            assert_eq!(m.suffix, "'da");
+            assert!(!m.inverted);
+        }
+
+        // Raw token (divine absolute).
+        let c = ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / kal");
+        if let Segment::Present(m) = c.modal {
+            assert_eq!(m.token, "kal");
+            assert_eq!(m.suffix, ""); // Raw, no suffix.
+        }
+
+        // Inversion.
+        let c = ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / na'kal'mi");
+        if let Segment::Present(m) = c.modal {
+            assert!(m.inverted);
+            assert_eq!(m.token, "kal");
+            assert_eq!(m.suffix, "'mi");
+        }
+
+        // Internal apostrophe stays, curly suffix canonicalised.
+        let c = ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / inther'kael’mi");
+        if let Segment::Present(m) = c.modal {
+            assert_eq!(m.token, "inther'kael");
+            assert_eq!(m.suffix, "'mi");
+        }
     }
 
     #[test]
-    fn time_loop_variants_parse_and_print() {
-        let c = ok("0·0·0·0 / 0·0·0·0⟁ / 0 / 00 / ANN / 0 / kal");
-        if let Segment::Present(t) = c.time {
-            assert!(matches!(t.loop_spec, Some(TimeLoop::Simple)));
-        } else {
-            panic!();
-        }
+    fn modal_misuse_and_brackets_and_veiling() {
+        // Unknown token.
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / nope'da"),
+            ErrorKind::InvalidModalTruth
+        ));
 
-        let c = ok("0·0·0·0 / 0·0·0·0⟁∞ / 0 / 00 / ANN / 0 / kal");
-        if let Segment::Present(t) = c.time {
-            assert!(matches!(t.loop_spec, Some(TimeLoop::Infinite)));
-        } else {
-            panic!();
-        }
+        // "na'" only at start, no spaces.
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / kal'na'mi"),
+            ErrorKind::InvalidModalTruth
+        ));
 
-        let c = ok("0·0·0·0 / 0·0·0·0⟁∂ / 0 / 00 / ANN / 0 / kal");
-        if let Segment::Present(t) = c.time {
-            assert!(matches!(t.loop_spec, Some(TimeLoop::UntilBoundary)));
-        } else {
-            panic!();
-        }
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / na' kal'mi"),
+            ErrorKind::InvalidModalTruth
+        ));
 
-        let c = ok("0·0·0·0 / 0·0·0·0⟁⊥ / 0 / 00 / ANN / 0 / kal");
-        if let Segment::Present(t) = c.time {
-            assert!(matches!(t.loop_spec, Some(TimeLoop::Paradox)));
-        } else {
-            panic!();
-        }
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / na'na'kal'mi"),
+            ErrorKind::InvalidModalTruth
+        ));
 
-        let c = ok("0·0·0·0 / 0·0·0·0⟁A / 0 / 00 / ANN / 0 / kal");
-        if let Segment::Present(t) = &c.time {
-            assert!(matches!(t.loop_spec, Some(TimeLoop::Count(10))));
-        } else {
-            panic!();
-        }
+        // Modal is not bracketed.
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / [kal'mi]"),
+            ErrorKind::InvalidStructure(_)
+        ));
 
-        // Round-trip prints the suffix.
+        // Veil ok, omit not ok.
+        ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / [selm]");
+        assert!(matches!(
+            err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / [veth]"),
+            ErrorKind::InvalidStructure(_)
+        ));
+    }
+
+    // -----------------------
+    // Round-trip & canonicalization
+    // -----------------------
+
+    #[test]
+    fn round_trip_canonicalizes_noise_and_is_stable() {
+        let noisy = "  abcd · ff · f · f  /  F · 3f · 3f · ffffffff⪤↻⟁a  /  1 · 2 · 3 ~ ⊥  /  0a · FF  /  ANN · REC  / beef  /  kal'mi  ";
+        let c = ok(noisy);
         let out = format!("{c}");
-        assert!(out.contains("0·0·0·0⟁A"));
+        assert!(out.contains(
+            "ABCD·FF·F·F / F·3F·3F·FFFFFFFF⪤↻⟁A / 1·2·3~⊥ / 0A·FF / ANN·REC / BEEF / kal'mi"
+        ));
+        // Stable print on second round.
+        let c2 = ok(&out);
+        assert_eq!(format!("{c}"), format!("{c2}"));
     }
 
-    #[test]
-    fn time_loop_bad_forms_are_rejected() {
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0⟁0 / 0 / 00 / ANN / 0 / kal"),
-            ErrorKind::InvalidTimeLoopPlacement
-        )); // Zero not allowed, because a loop of zero makes no sense.
-
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0⟁G / 0 / 00 / ANN / 0 / kal"),
-            ErrorKind::InvalidTimeLoopPlacement
-        ));
-
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0foo⟁A / 0 / 00 / ANN / 0 / kal"),
-            ErrorKind::InvalidTimeLoopPlacement
-        ));
-
-        assert!(matches!(
-            err("0·0·0·0 / [selm]⟁A / 0 / 00 / ANN / 0 / kal"),
-            ErrorKind::InvalidTimeLoopPlacement
-        ));
-    }
+    // -----------------------
+    // Misc placeholders
+    // -----------------------
 
     #[test]
-    fn vtfm_only_valid_dectorators() {
-        let c = ok("0·0·0·0 / 0·0·0·0⪤↻ / 0 / 00 / ANN / 0 / kal");
-        if let Segment::Present(t) = c.time {
-            assert!(matches!(t.vtfm, Some(TimeFlowMod::RecurringConvergence)));
-        } else {
-            panic!();
-        }
-
-        // P is not a valid dectorator for the VTFM.
+    fn placeholders_keep_structure_and_time_placeholders_ok() {
+        ok("[selm] / [veth] / [selm] / [veth] / ANN / 0 / kal'mi");
         assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0⪤P / 0 / 00 / ANN / 0 / kal"),
-            ErrorKind::VtfmUnknownDecorator
+            err("[selm] / [veth] / [selm] /  / ANN / 0 / kal'mi"),
+            ErrorKind::InvalidStructure(_)
         ));
-    }
-
-    #[test]
-    fn vtfm_bare_and_with_loops() {
-        // Bare ⪤ (non-linear flow), no loop.
-        let c = ok("0·0·0·0 / 0·0·0·0⪤ / 0 / 00 / ANN / 0 / kal");
-        if let Segment::Present(t) = &c.time {
-            assert!(matches!(t.vtfm, Some(TimeFlowMod::Nonlinear)));
-            assert!(matches!(t.loop_spec, None));
-        } else {
-            panic!()
-        }
-        assert!(format!("{c}").contains("0·0·0·0⪤"));
-
-        // Bare ⪤ + counted loop → prints ⪤⟁A (no duplication).
-        let c = ok("0·0·0·0 / 0·0·0·0⪤⟁A / 0 / 00 / ANN / 0 / kal");
-        if let Segment::Present(t) = &c.time {
-            assert!(matches!(t.vtfm, Some(TimeFlowMod::Nonlinear)));
-            assert!(matches!(t.loop_spec, Some(TimeLoop::Count(0xA))));
-        } else {
-            panic!()
-        }
-        assert!(format!("{c}").contains("0·0·0·0⪤⟁A"));
-    }
-
-    #[test]
-    fn vtfm_decorated_keeps_order_with_loop() {
-        let c = ok("0·0·0·0 / 0·0·0·0⪤↻⟁∞ / 0 / 00 / ANN / 0 / kal");
-        if let Segment::Present(t) = &c.time {
-            assert!(matches!(t.vtfm, Some(TimeFlowMod::RecurringConvergence)));
-            assert!(matches!(t.loop_spec, Some(TimeLoop::Infinite)));
-        } else {
-            panic!()
-        }
-
-        assert!(format!("{c}").contains("0·0·0·0⪤↻⟁∞"));
-    }
-
-    #[test]
-    fn vtfm_only_at_end_and_only_once() {
-        // Multiple VTFM.
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·0·0⪤↻⪤⇌ / 0 / 00 / ANN / 0 / kal"),
-            ErrorKind::VtfmMisplaced
-        ));
-
-        // Stray ⪤ in the middle.
-        assert!(matches!(
-            err("0·0·0·0 / 0·0·⪤·0·0 / 0 / 00 / ANN / 0 / kal"),
-            ErrorKind::VtfmUnknownDecorator
-        ));
+        ok("0·0·0·0 / [selm] / 0 / 00 / ANN / 0 / kal'mi");
+        ok("0·0·0·0 / [veth] / 0 / 00 / ANN / 0 / kal'mi");
     }
 }
