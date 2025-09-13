@@ -83,7 +83,9 @@ pub fn parse(input: &str) -> Result<Coordinate, Error> {
 
 /// Recursion decorators permitted on Location (whole segment) and on Fold tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum Recursion {
+    #[default]
     None,
     Tilde,        // ~
     TildeInf,     // ~∞
@@ -91,11 +93,6 @@ pub enum Recursion {
     TildeBottom,  // ~⊥
 }
 
-impl Default for Recursion {
-    fn default() -> Self {
-        Recursion::None
-    }
-}
 
 impl fmt::Display for Recursion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -818,17 +815,16 @@ impl<'a> Parser<'a> {
         }
 
         // If not an EBS token, it must look like ≤8 hex.
-        if !tick_preview.contains('{') && !tick_preview.contains('}') {
-            if tick_preview.is_empty()
+        if !tick_preview.contains('{') && !tick_preview.contains('}')
+            && (tick_preview.is_empty()
                 || tick_preview.len() > 8
-                || !tick_preview.chars().all(|c| c.is_ascii_hexdigit())
+                || !tick_preview.chars().all(|c| c.is_ascii_hexdigit()))
             {
                 return Err(Error::new(
                     ErrorKind::InvalidTimeLoopPlacement,
                     "loop must directly follow a valid tick (≤8 hex)",
                 ));
             }
-        }
         Ok(())
     }
 
@@ -993,11 +989,10 @@ impl<'a> Parser<'a> {
         }
 
         // INV may never be last.
-        if let Some(last) = folds.last() {
-            if last.tag == "INV" {
+        if let Some(last) = folds.last()
+            && last.tag == "INV" {
                 return Err(Error::new(ErrorKind::InvAtEnd, &last.tag));
             }
-        }
 
         Ok(Segment::Present(FoldsSegment { folds }))
     }
@@ -1055,8 +1050,7 @@ impl<'a> Parser<'a> {
             };
 
         // Optional inversion prefix `na'` ONLY at the beginning, no spaces, only once.
-        let (inverted, token_str) = if core_maybe_na.starts_with("na'") {
-            let rest = &core_maybe_na[3..];
+        let (inverted, token_str) = if let Some(rest) = core_maybe_na.strip_prefix("na'") {
             if rest.starts_with(char::is_whitespace) || rest.contains("na'") || rest.is_empty() {
                 return Err(Error::new(
                     ErrorKind::InvalidModalTruth,
@@ -1140,7 +1134,7 @@ fn display_time(t: &TimeSegment) -> String {
             TimeFlowMod::CrossThreaded => out.push_str("⪤⊗"),
             TimeFlowMod::VeiledFlux => out.push_str("⪤⊘"),
             TimeFlowMod::EntropicSink => out.push_str("⪤↡"),
-            TimeFlowMod::Nonlinear => out.push_str("⪤"),
+            TimeFlowMod::Nonlinear => out.push('⪤'),
         }
     }
 
