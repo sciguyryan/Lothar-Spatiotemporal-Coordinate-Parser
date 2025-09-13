@@ -1,7 +1,18 @@
 [package]
-name = "lothar-coordinate-parser"
+name = "spatiotemporal_parser"
 version = "0.1.0"
+authors = ["Ryan Jones-Ward <sciguyryan@gmail.com>"]
 edition = "2024"
+readme = "README.md"
+description = "Lôthar Sothar spatiotemporal coordinate format."
+license = "LGPL 2.1"
+repository = "https://github.com/sciguyryan/Lothar-Spatiotemporal-Coordinate-Parser"
+homepage = "https://github.com/sciguyryan/Lothar-Spatiotemporal-Coordinate-Parser"
+publish = false
 
-[dependencies]
-once_cell = "1.21.3"
+[lib]
+name = "spatiotemporal_parser"
+path = "src/lib.rs"
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"
