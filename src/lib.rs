@@ -34,7 +34,7 @@
 //! - **Modal**: token in allowlist + `'mi`/`'da`
 //!
 //! ## Output
-//! Returns a strongly typed [`Coordinate`] AST. Errors are categorized in [`ErrorKind`]
+//! Returns a strongly typed [`Coordinate`] AST. Errors are categorised in [`ErrorKind`]
 //! with helpful context. A canonical pretty-printer is provided via `Display`.
 //!
 //! ## Example
@@ -51,6 +51,8 @@
 //! ```
 
 use core::fmt;
+use once_cell::sync::Lazy;
+use std::{borrow::Cow, collections::HashSet};
 
 /// Allowlist of fold tags.
 const ALLOWED_FOLD_TAGS: &[&str] = &[
@@ -75,6 +77,27 @@ const ALLOWED_MODAL_TOKENS: &[&str] = &[
     "vesh",
     "thur",
 ];
+
+// Precomputed sets for O(1) membership checks.
+static NORMAL_FOLDS: Lazy<HashSet<&'static str>> =
+    Lazy::new(|| ALLOWED_FOLD_TAGS.iter().copied().collect());
+static DREAM_FOLDS: Lazy<HashSet<&'static str>> =
+    Lazy::new(|| ALLOWED_DREAM_FOLD_TAGS.iter().copied().collect());
+static MODAL_TOKENS: Lazy<HashSet<&'static str>> =
+    Lazy::new(|| ALLOWED_MODAL_TOKENS.iter().copied().collect());
+
+/// Centralized VTFM mapping table - decorated suffix to enum.
+const VTFM_SUFFIXES: &[(&str, TimeFlowMod)] = &[
+    ("⪤↻", TimeFlowMod::RecurringConvergence),
+    ("⪤⇌", TimeFlowMod::ReversibleOscillating),
+    ("⪤⊞", TimeFlowMod::MultidirectionalBraided),
+    ("⪤⊗", TimeFlowMod::CrossThreaded),
+    ("⪤⊘", TimeFlowMod::VeiledFlux),
+    ("⪤↡", TimeFlowMod::EntropicSink),
+];
+
+/// Allowed single-glyph decorators that may follow ⪤.
+const VTFM_DECORATORS: &[&str] = &["↻", "⇌", "⊞", "⊗", "⊘", "↡"];
 
 /// Top-level parse entry point.
 pub fn parse(input: &str) -> Result<Coordinate, Error> {
@@ -143,7 +166,7 @@ pub enum TimeLoop {
     Count(u32),    // "⟁" + 1..8 hex digits, >= 1
 }
 
-/// A Time segment: hour·minute·second·tick
+/// Time segment - hour·minute·second·tick
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeSegment {
     pub hour: ValueOrEbs<HexNum>,
@@ -154,36 +177,36 @@ pub struct TimeSegment {
     pub loop_spec: Option<TimeLoop>,
 }
 
-/// Location segment: N axes (1+ hex digits each), and optional recursion decorator on the whole segment.
+/// Location segment - N axes (1+ hex digits each), and optional recursion decorator on the whole segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocationSegment {
     pub axes: Vec<ValueOrEbs<HexNum>>, // 1+ entries
     pub recursion: Recursion,
 }
 
-/// Dimensional tier: one or more elements, each exactly 2 hex digits (00..FF).
+/// Dimensional tier - one or more elements, each exactly 2 hex digits (00..FF).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TierSegment {
     pub tiers: Vec<u8>,
 }
 
-/// Fold tag + optional recursion.
+/// Metaphysical Fold indices and tags, and optional recursion decorator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldTag {
     pub tag: String, // Uppercase 3 letters.
     pub recursion: Recursion,
 }
 
-/// Fold chain: 1+ fold tags (if present).
+/// Metaphysical Fold chain - 1 or more fold tags.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldsSegment {
     pub folds: Vec<FoldTag>,
 }
 
-/// Branch segment: hex (1+ digits).
+/// Timeline branch segment - hex (1..=4 hex digits).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchSegment {
-    pub code: String, // Normalized uppercase.
+    pub code: String, // Normalised uppercase.
 }
 
 /// Modal truth segment.
@@ -251,39 +274,38 @@ impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ErrorKind::WrongSegmentCount => {
-                write!(f, "wrong number of segments (expected exactly 7)")
+                f.write_str("wrong number of segments (expected exactly 7)")
             }
-            ErrorKind::InvalidHex => write!(f, "invalid hexadecimal value"),
+            ErrorKind::InvalidHex => f.write_str("invalid hexadecimal value"),
             ErrorKind::OutOfRange(label) => write!(f, "value out of range for {label}"),
             ErrorKind::InvalidLength(label) => write!(f, "invalid length for {label}"),
             ErrorKind::EbsNotAllowedHere => {
-                write!(f, "EBS notation is not allowed in this segment")
+                f.write_str("EBS notation is not allowed in this segment")
             }
-            ErrorKind::UnbalancedBraces => write!(f, "unbalanced braces in EBS notation"),
+            ErrorKind::UnbalancedBraces => f.write_str("unbalanced braces in EBS notation"),
             ErrorKind::InvalidEbsSyntax(msg) => write!(f, "invalid EBS syntax: {msg}"),
-            ErrorKind::InvalidDecorator => write!(f, "invalid decorator symbol or placement"),
-            ErrorKind::InvalidFoldTag => write!(f, "invalid fold tag"),
-            ErrorKind::LowercaseFoldTag => write!(f, "fold tags must be uppercase"),
-            ErrorKind::InvalidModalTruth => write!(f, "invalid modal truth particle"),
+            ErrorKind::InvalidDecorator => f.write_str("invalid decorator symbol or placement"),
+            ErrorKind::InvalidFoldTag => f.write_str("invalid fold tag"),
+            ErrorKind::LowercaseFoldTag => f.write_str("fold tags must be uppercase"),
+            ErrorKind::InvalidModalTruth => f.write_str("invalid modal truth particle"),
             ErrorKind::InvalidTimeLoopPlacement => {
-                write!(f, "invalid time-loop marker (⟁) placement")
+                f.write_str("invalid time-loop marker (⟁) placement")
             }
             ErrorKind::TimeLoopCountTooLong => {
-                write!(f, "time-loop count has more than 8 hex digits")
+                f.write_str("time-loop count has more than 8 hex digits")
             }
-            ErrorKind::TimeLoopCountZero => write!(f, "time-loop count must be greater than 0"),
+            ErrorKind::TimeLoopCountZero => f.write_str("time-loop count must be greater than 0"),
             ErrorKind::InvalidStructure(msg) => write!(f, "invalid structure: {msg}"),
-            ErrorKind::DreamFoldWithoutDrm => write!(
-                f,
-                "dream-fold tag requires a prior DRM tag in the fold chain"
-            ),
-            ErrorKind::InvAtEnd => write!(f, "INV cannot be the last fold tag"),
-            ErrorKind::VtfmMisplaced => write!(f, "invalid placement of vectorial time flow (⪤)"),
+            ErrorKind::DreamFoldWithoutDrm => {
+                f.write_str("dream-fold tag requires a prior DRM tag in the fold chain")
+            }
+            ErrorKind::InvAtEnd => f.write_str("INV cannot be the last fold tag"),
+            ErrorKind::VtfmMisplaced => f.write_str("invalid placement of vectorial time flow (⪤)"),
             ErrorKind::VtfmUnknownDecorator => {
-                write!(f, "unknown vectorial time flow decorator after ⪤")
+                f.write_str("unknown vectorial time flow decorator after ⪤")
             }
             ErrorKind::VtfmMultiple => {
-                write!(f, "multiple vectorial time flow modifiers are not allowed")
+                f.write_str("multiple vectorial time flow modifiers are not allowed")
             }
         }
     }
@@ -314,7 +336,7 @@ impl fmt::Display for Error {
     }
 }
 
-/// Hex number wrapper holding the normalized uppercase string.
+/// Hex number wrapper holding the normalised uppercase string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HexNum {
     pub text: String,
@@ -327,7 +349,7 @@ impl HexNum {
         }
 
         let up = s.trim().to_ascii_uppercase();
-        if !up.chars().all(is_hex_char) {
+        if !up.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(Error::new(ErrorKind::InvalidHex, s));
         }
 
@@ -335,12 +357,8 @@ impl HexNum {
     }
 
     fn to_u128(&self) -> u128 {
-        u128::from_str_radix(&self.text, 16).unwrap()
+        u128::from_str_radix(&self.text, 16).expect("validated hex")
     }
-}
-#[inline]
-fn is_hex_char(c: char) -> bool {
-    c.is_ascii_hexdigit()
 }
 
 /// A value that may be wrapped in an EBS form.
@@ -442,19 +460,15 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn split_dot(&self, s: &str) -> Vec<String> {
+    fn split_dot(&self, s: &'a str) -> Vec<&'a str> {
         // DO NOT filter out empties; callers must validate them.
-        s.split('·').map(|t| t.trim().to_string()).collect()
+        s.split('·').map(str::trim).collect()
     }
 
-    fn parse_recursion_suffix(&self, s: &str) -> Result<(Recursion, String), Error> {
-        // Allow whitespace before/after the decorator and between '~' and its symbol.
+    fn parse_recursion_suffix<'b>(&self, s: &'b str) -> Result<(Recursion, &'b str), Error> {
         let trimmed = s.trim_end();
-
-        // Look for the last '~' (decorator applies to the entire location segment).
         if let Some(pos) = trimmed.rfind('~') {
-            // Everything after '~' may have spaces and then one of: ∞, ∂, ⊥, or nothing.
-            let tail = trimmed[pos + 1..].trim(); // e.g. "", "∞", "∂", "⊥"
+            let tail = trimmed[pos + 1..].trim();
             let rec = match tail {
                 "" => Recursion::Tilde,
                 "∞" => Recursion::TildeInf,
@@ -462,12 +476,10 @@ impl<'a> Parser<'a> {
                 "⊥" => Recursion::TildeBottom,
                 _ => return Err(Error::new(ErrorKind::InvalidDecorator, &trimmed[pos..])),
             };
-            // Core (axes) are everything before the '~', trimming trailing spaces.
             let core = trimmed[..pos].trim_end();
-            return Ok((rec, core.to_string()));
+            return Ok((rec, core));
         }
-
-        Ok((Recursion::None, trimmed.to_string()))
+        Ok((Recursion::None, trimmed))
     }
 
     fn parse_hex(&self, s: &str) -> Result<HexNum, Error> {
@@ -675,16 +687,10 @@ impl<'a> Parser<'a> {
         let (st2, vtfm) = self.extract_vtfm_suffix(st)?;
         st = st2;
 
-        // If we already consumed one VTFM, explicitly check if another VTFM suffix remains at the end.
-        // If so, report VtfmMultiple (more precise than a generic "misplaced" error).
+        // If we already consumed one VTFM, explicitly check if
+        // another VTFM suffix remains at the end.
         if vtfm.is_some()
-            && (st.ends_with("⪤↻")
-                || st.ends_with("⪤⇌")
-                || st.ends_with("⪤⊞")
-                || st.ends_with("⪤⊗")
-                || st.ends_with("⪤⊘")
-                || st.ends_with("⪤↡")
-                || st.ends_with('⪤'))
+            && (VTFM_SUFFIXES.iter().any(|(s, _)| st.ends_with(*s)) || st.ends_with('⪤'))
         {
             return Err(Error::new(
                 ErrorKind::VtfmMultiple,
@@ -692,7 +698,8 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        // Ensure no stray VTFM particle is left elsewhere.
+        // Ensure there are no stray VTFM particles left behind.
+        // That would be invalid syntax.
         if st.contains('⪤') {
             return Err(Error::new(
                 ErrorKind::VtfmMisplaced,
@@ -793,25 +800,14 @@ impl<'a> Parser<'a> {
     /// Accepts bare `⪤` or decorated `⪤↻/⇌/⊞/⊗/⊘/↡`. Returns (remainder, vtfm_option).
     fn extract_vtfm_suffix<'b>(&self, s: &'b str) -> Result<(&'b str, Option<TimeFlowMod>), Error> {
         let mut st = s.trim_end();
-        let vtfm: Option<TimeFlowMod>;
-
-        macro_rules! try_vtfm {
-            ($pat:literal, $variant:expr) => {
-                if let Some(prefix) = st.strip_suffix($pat) {
-                    vtfm = Some($variant);
-                    st = prefix.trim_end();
-                    return Ok((st, vtfm));
-                }
-            };
-        }
 
         // Decorated VTFM particles first.
-        try_vtfm!("⪤↻", TimeFlowMod::RecurringConvergence);
-        try_vtfm!("⪤⇌", TimeFlowMod::ReversibleOscillating);
-        try_vtfm!("⪤⊞", TimeFlowMod::MultidirectionalBraided);
-        try_vtfm!("⪤⊗", TimeFlowMod::CrossThreaded);
-        try_vtfm!("⪤⊘", TimeFlowMod::VeiledFlux);
-        try_vtfm!("⪤↡", TimeFlowMod::EntropicSink);
+        for (pat, variant) in VTFM_SUFFIXES {
+            if let Some(prefix) = st.strip_suffix(pat) {
+                st = prefix.trim_end();
+                return Ok((st, Some(variant.clone())));
+            }
+        }
 
         // And a bare VTFM particle if those fail.
         if st.ends_with('⪤') {
@@ -822,14 +818,7 @@ impl<'a> Parser<'a> {
         // If some ⪤ exists but not in a recognised suffix position.
         if let Some(pos) = st.rfind('⪤') {
             let tail = st[pos + '⪤'.len_utf8()..].trim_end();
-            if !tail.is_empty()
-                && tail != "↻"
-                && tail != "⇌"
-                && tail != "⊞"
-                && tail != "⊗"
-                && tail != "⊘"
-                && tail != "↡"
-            {
+            if !tail.is_empty() && !VTFM_DECORATORS.contains(&tail) {
                 return Err(Error::new(ErrorKind::VtfmUnknownDecorator, tail));
             }
         }
@@ -850,13 +839,14 @@ impl<'a> Parser<'a> {
 
         let mut tick_preview = preview[3].trim_end();
 
-        // Strip one trailing VTFM if present.
-        for pat in ["⪤↻", "⪤⇌", "⪤⊞", "⪤⊗", "⪤⊘", "⪤↡"] {
+        // Strip one trailing VTFM if present (decorated first).
+        for (pat, _) in VTFM_SUFFIXES {
             if tick_preview.ends_with(pat) {
                 tick_preview = tick_preview[..tick_preview.len() - pat.len()].trim_end();
                 break;
             }
         }
+
         if tick_preview.ends_with('⪤') {
             tick_preview = tick_preview[..tick_preview.len() - '⪤'.len_utf8()].trim_end();
         }
@@ -1012,8 +1002,8 @@ impl<'a> Parser<'a> {
                 return Err(Error::new(ErrorKind::InvalidFoldTag, tag));
             }
 
-            let is_normal = ALLOWED_FOLD_TAGS.contains(&tag);
-            let is_dream = ALLOWED_DREAM_FOLD_TAGS.contains(&tag);
+            let is_normal = NORMAL_FOLDS.contains(tag);
+            let is_dream = DREAM_FOLDS.contains(tag);
 
             // Must be either a normal fold or a dream-fold.
             if !(is_normal || is_dream) {
@@ -1063,7 +1053,12 @@ impl<'a> Parser<'a> {
 
     fn parse_modal_segment(&self, s: &str) -> Result<Modal, Error> {
         // Canonicalise curly apostrophes to ASCII "'".
-        let st = s.trim().replace('\u{2019}', "'");
+        let trimmed = s.trim();
+        let st: Cow<'_, str> = if trimmed.contains('\u{2019}') {
+            Cow::Owned(trimmed.replace('\u{2019}', "'"))
+        } else {
+            Cow::Borrowed(trimmed)
+        };
 
         // Modal segment may be veiled but NOT omitted.
         if let Some(mark) = self.segment_mark(&st) {
@@ -1095,7 +1090,7 @@ impl<'a> Parser<'a> {
                 (core.trim_end(), "'da")
             } else {
                 // No suffix — accept bare divine particle
-                (st.as_str(), "")
+                (&st, "")
             };
 
         // Optional inversion prefix "na'" ONLY at the beginning, no spaces, only once.
@@ -1120,7 +1115,7 @@ impl<'a> Parser<'a> {
         }
 
         // Validate base token against the allowlist.
-        if !ALLOWED_MODAL_TOKENS.contains(&token_str) {
+        if !MODAL_TOKENS.contains(token_str) {
             return Err(Error::new(ErrorKind::InvalidModalTruth, token_str));
         }
 
@@ -1283,24 +1278,35 @@ mod tests {
     fn ok(input: &str) -> Coordinate {
         parse(input).expect("should parse")
     }
+
     fn err(input: &str) -> ErrorKind {
         match parse(input) {
             Ok(_) => panic!("expected error"),
             Err(e) => e.kind,
         }
     }
+
+    fn time(c: &Coordinate) -> &TimeSegment {
+        match &c.time {
+            Segment::Present(t) => &t,
+            _ => panic!("time not present"),
+        }
+    }
+
     fn loc_axes(c: &Coordinate) -> &[ValueOrEbs<HexNum>] {
         match &c.location {
             Segment::Present(l) => &l.axes,
             _ => panic!("location not present"),
         }
     }
+
     fn folds_vec(c: &Coordinate) -> &[FoldTag] {
         match &c.folds {
             Segment::Present(f) => &f.folds,
             _ => panic!("folds not present"),
         }
     }
+
     fn branch_code(c: &Coordinate) -> &str {
         match &c.branch {
             Segment::Present(b) => &b.code,
@@ -1318,10 +1324,12 @@ mod tests {
             err("A·0·0·0 / 0·0·0·0 / F / 00 / ANN / B7"),
             ErrorKind::WrongSegmentCount
         ));
+
         assert!(matches!(
             err("A·0·0·0 / 0·0·0·0 / F / 00 / ANN / B7 / kal'mi / extra"),
             ErrorKind::WrongSegmentCount
         ));
+
         assert!(matches!(
             err("A·0·0·0 / 0·0·0·0 /  / 00 / ANN / B7 / kal'mi"),
             ErrorKind::InvalidStructure(_)
@@ -1330,12 +1338,13 @@ mod tests {
 
     #[test]
     fn only_middot_as_inner_separator() {
-        // bad: colon
+        // Bad - colon
         assert!(matches!(
             err("0·0·0·0 / 0:0:0:0 / 0 / 00 / ANN / 0 / kal"),
             ErrorKind::InvalidStructure(_)
         ));
-        // bad: bullet lookalike
+
+        // Bad - bullet lookalike.
         assert!(matches!(
             err("0·0·0·0 / 0•0•0•0 / 0 / 00 / ANN / 0 / kal"),
             ErrorKind::InvalidStructure(_)
@@ -1364,7 +1373,7 @@ mod tests {
     }
 
     // -----------------------
-    // Time-loop: placement, forms, counts
+    // Time-loop - placement, forms, counts
     // -----------------------
 
     #[test]
@@ -1448,7 +1457,7 @@ mod tests {
     }
 
     // -----------------------
-    // VTFM: placement, variants
+    // VTFM - placement, variants
     // -----------------------
 
     #[test]
@@ -1513,22 +1522,25 @@ mod tests {
 
     #[test]
     fn time_edges_limits_and_overflow() {
-        // exact edges allowed
+        // Exact edges allowed.
         ok("0·00·0·0 / F·3F·3F·FFFFFFFF / 0 / 00 / ANN / 0 / kal'mi");
 
-        // overflow rejects
+        // Overflow rejects.
         assert!(matches!(
             err("0·00·0·0 / 10·0·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::OutOfRange("hour")
         ));
+
         assert!(matches!(
             err("0·00·0·0 / 0·40·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::OutOfRange("minute")
         ));
+
         assert!(matches!(
             err("0·00·0·0 / 0·0·40·0 / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::OutOfRange("second")
         ));
+
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·100000000 / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::InvalidHex | ErrorKind::OutOfRange("tick")
@@ -1617,13 +1629,14 @@ mod tests {
 
     #[test]
     fn ebs_caps_upper_endpoint_only() {
-        // plus-minus: minute center+delta <= 0x3F
+        // ± - minute center+delta <= 0x3F.
         ok("0·00·0·0 / 0·{3E±1}·0·0 / 0 / 00 / ANN / 0 / kal'mi");
         assert!(matches!(
             err("0·00·0·0 / 0·{2±3E}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
             ErrorKind::OutOfRange("minute")
         ));
-        // range: end <= 0x3F
+
+        // Range - end <= 0x3F.
         ok("0·00·0·0 / 0·{0...3F}·0·0 / 0 / 00 / ANN / 0 / kal'mi");
         assert!(matches!(
             err("0·00·0·0 / 0·{0...40}·0·0 / 0 / 00 / ANN / 0 / kal'mi"),
@@ -1655,7 +1668,7 @@ mod tests {
     }
 
     // -----------------------
-    // Tier
+    // Dimensional Tier
     // -----------------------
 
     #[test]
@@ -1664,15 +1677,18 @@ mod tests {
         if let Segment::Present(t) = c.tier {
             assert_eq!(t.tiers, vec![0x0A, 0xFF, 0x01]);
         }
+
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·0 / 0 / A / ANN / 1 / ven'da"),
             ErrorKind::InvalidLength("tier(2-hex)")
         ));
+
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·0 / 0 / 0AF / ANN / 1 / ven'da"),
             ErrorKind::InvalidLength("tier(2-hex)")
         ));
-        // EBS not allowed in tier
+
+        // EBS not allowed in tier.
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·0 / 0 / {0A} / ANN / 1 / ven'da"),
             ErrorKind::EbsNotAllowedHere
@@ -1680,29 +1696,34 @@ mod tests {
     }
 
     // -----------------------
-    // Folds (allowlist, indices, DRM-gated dreamfolds, INV not last)
+    // Metaphysical Folds
     // -----------------------
 
     #[test]
     fn folds_uppercase_allowlist_and_indices() {
         ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN·REC / B7 / kal");
-        // numeric indices uppercase normalized
+
+        // Numeric indices uppercase normalised.
         let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN·0a·DRM·FF / B7 / kal");
         let folds = folds_vec(&c);
-        // we just assert chain length and that numeric items remain present; internal normalization is impl detail
+
+        // We just assert chain length and that numeric items remain present;
+        // internal normalisation is implementation detail.
         assert_eq!(folds.len(), 4);
 
-        // lowercase tag rejected
+        // Lowercase tag rejected.
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·0 / 0 / 00 / ann / B7 / kal"),
             ErrorKind::LowercaseFoldTag
         ));
-        // unknown tag rejected
+
+        // Unknown tag rejected.
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·0 / 0 / 00 / XYZ / B7 / kal"),
             ErrorKind::InvalidFoldTag
         ));
-        // empty fold item rejected
+
+        // Empty fold item rejected.
         assert!(matches!(
             err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN··REC / 0 / kal"),
             ErrorKind::InvalidFoldTag
@@ -1711,31 +1732,38 @@ mod tests {
 
     #[test]
     fn dreamfold_tags_require_prior_drm_and_inv_not_last() {
-        // needs DRM before dreamfold tags like PSI, CRY, ...
+        // Needs DRM before dreamfold tags like PSI, CRY, ...
         assert!(matches!(
             err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·PSI / 0 / kal"),
             ErrorKind::DreamFoldWithoutDrm
         ));
         ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·DRM·PSI / 0 / kal");
 
-        // INV cannot be last
+        // INV cannot be last.
         assert!(matches!(
             err("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·DRM·INV / 0 / kal"),
             ErrorKind::InvAtEnd
         ));
 
-        // DRM gating still holds if DRM appears earlier than the dreamfold tag
+        // DRM gating still holds if DRM appears earlier than the dreamfold tag.
         ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN·INV·DRM·PSI / 0 / kal");
     }
 
     // -----------------------
-    // Branch
+    // Timeline Branch
     // -----------------------
 
     #[test]
-    fn branch_hex_normalization_and_rejection_of_non_hex() {
+    fn branch_hex_normalisation_and_rejection_of_non_hex() {
         let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / beef / kal'mi");
         assert_eq!(branch_code(&c), "BEEF");
+
+        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / 0 / kal'mi");
+        assert_eq!(branch_code(&c), "0");
+
+        let c = ok("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / DEADBEEF / kal'mi");
+        assert_eq!(branch_code(&c), "DEADBEEF");
+
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·0 / 0 / 00 / ANN / GHIJ / kal'mi"),
             ErrorKind::InvalidHex
@@ -1818,17 +1846,18 @@ mod tests {
     }
 
     // -----------------------
-    // Round-trip & canonicalization
+    // Round-trip & canonicalisation
     // -----------------------
 
     #[test]
-    fn round_trip_canonicalizes_noise_and_is_stable() {
+    fn round_trip_canonicalises_noise_and_is_stable() {
         let noisy = "  abcd · ff · f · f  /  F · 3f · 3f · ffffffff⪤↻⟁a  /  1 · 2 · 3 ~ ⊥  /  0a · FF  /  ANN · REC  / beef  /  kal'mi  ";
         let c = ok(noisy);
         let out = format!("{c}");
         assert!(out.contains(
             "ABCD·FF·F·F / F·3F·3F·FFFFFFFF⪤↻⟁A / 1·2·3~⊥ / 0A·FF / ANN·REC / BEEF / kal'mi"
         ));
+
         // Stable print on second round.
         let c2 = ok(&out);
         assert_eq!(format!("{c}"), format!("{c2}"));
@@ -1845,7 +1874,99 @@ mod tests {
             err("[selm] / [veth] / [selm] /  / ANN / 0 / kal'mi"),
             ErrorKind::InvalidStructure(_)
         ));
+
         ok("0·0·0·0 / [selm] / 0 / 00 / ANN / 0 / kal'mi");
         ok("0·0·0·0 / [veth] / 0 / 00 / ANN / 0 / kal'mi");
+    }
+
+    // -----------------------
+    // Torture tests
+    // -----------------------
+    // ---------- gargantuan: maximal feature coverage INCLUDING VTFM + loop ----------
+    #[test]
+    fn gargantuan_coordinate_all_supported_features_including_vtfm_and_loop() {
+        // Date: large cycle + nontrivial Y/M/D.
+        // Time: max tick + decorated VTFM (⪤⊗ CrossThreaded) + counted loop (8 hex digits).
+        // Location: exercises all EBS kinds in input (range, ±, exact), plus plain values, plus recursion ~⊥.
+        // Tier: long chain of 2-hex tiers.
+        // Folds: normal + numeric index + DRM-gated dreamfolds + chain tags (INV not last).
+        // Branch: arbitrarily long hex (no length cap).
+        // Modal: inverted token with curly apostrophes normalised.
+        let s = "\
+            12BFF·7·D·A \
+            / F·3F·3F·FFFFFFFF⪤⊗⟁7F3A2C1D \
+            / {0...FFFFFFFFFFFFFFFF}·{10±FFFF}·{0000000F}·1·2·3E·4D·{3E ± 1}·{2 ... 3}·7·8·9~⊥ \
+            / 00·01·0A·FF·D2·A1 \
+            / ANN·0F·DRM·REMGEN·LUC·PSI·REC·INV·RLK·SPR·SYM·TMP \
+            / DEADBEEFCAFEBABE0123456789ABCDEF \
+            / na’inther'kael’da";
+
+        let c = ok(s);
+
+        let t = time(&c);
+        assert!(
+            matches!(t.vtfm, Some(TimeFlowMod::CrossThreaded)),
+            "expected ⪤⊗ to map to CrossThreaded"
+        );
+
+        assert!(matches!(t.loop_spec, Some(TimeLoop::Count(0x7F3A2C1D))));
+
+        let rendered = format!("{c}");
+        assert!(
+            rendered.contains(" / F·3F·3F·FFFFFFFF⪤⊗⟁7F3A2C1D / "),
+            "rendered={rendered}"
+        );
+
+        match &c.location {
+            Segment::Present(loc) => {
+                assert_eq!(loc.axes.len(), 12);
+
+                // We don't match inner EBS variant names; just assert EBS is used where intended.
+                assert!(
+                    matches!(loc.axes[0], ValueOrEbs::Ebs(_)),
+                    "axis 0 should be EBS (range)"
+                );
+
+                assert!(
+                    matches!(loc.axes[1], ValueOrEbs::Ebs(_)),
+                    "axis 1 should be EBS (±)"
+                );
+
+                assert!(
+                    matches!(loc.axes[2], ValueOrEbs::Ebs(_)),
+                    "axis 2 should be EBS (exact)"
+                );
+
+                assert!(matches!(loc.recursion, Recursion::TildeBottom));
+            }
+            _ => panic!("location not present"),
+        }
+
+        if let Segment::Present(tier) = &c.tier {
+            assert_eq!(tier.tiers, vec![0x00, 0x01, 0x0A, 0xFF, 0xD2, 0xA1]);
+        } else {
+            panic!("tier not present");
+        }
+
+        let f = folds_vec(&c);
+        assert!(f.len() >= 10);
+        assert!(
+            rendered.contains("/ ANN·0F·DRM·REMGEN·LUC·PSI·REC·INV·RLK·SPR"),
+            "rendered={rendered}"
+        );
+
+        assert_eq!(branch_code(&c), "DEADBEEFCAFEBABE0123456789ABCDEF");
+
+        if let Segment::Present(m) = &c.modal {
+            assert!(m.inverted);
+            assert_eq!(m.token, "inther'kael");
+            assert_eq!(m.suffix, "'da");
+        } else {
+            panic!("modal not present");
+        }
+
+        let canon = format!("{c}");
+        let c2 = ok(&canon);
+        assert_eq!(format!("{c2}"), canon);
     }
 }
