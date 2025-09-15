@@ -628,15 +628,15 @@ impl<'a> Parser<'a> {
                 s,
             ));
         }
-        let cycle = self.parse_value_or_ebs_hex(&parts[0])?;
+        let cycle = self.parse_value_or_ebs_hex(parts[0])?;
 
-        let year = self.parse_value_or_ebs_hex(&parts[1])?;
+        let year = self.parse_value_or_ebs_hex(parts[1])?;
         self.validate_upper_cap(&year, 0xFF, "year")?;
 
-        let month = self.parse_value_or_ebs_hex(&parts[2])?;
+        let month = self.parse_value_or_ebs_hex(parts[2])?;
         self.validate_upper_cap(&month, 0xF, "month")?;
 
-        let day = self.parse_value_or_ebs_hex(&parts[3])?;
+        let day = self.parse_value_or_ebs_hex(parts[3])?;
         self.validate_upper_cap(&day, 0xF, "day")?;
 
         Ok(Segment::Present(DateSegment {
@@ -864,10 +864,10 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        let hour = self.parse_value_or_ebs_hex(&parts[0])?;
-        let minute = self.parse_value_or_ebs_hex(&parts[1])?;
-        let second = self.parse_value_or_ebs_hex(&parts[2])?;
-        let tick = self.parse_value_or_ebs_hex(&parts[3])?;
+        let hour = self.parse_value_or_ebs_hex(parts[0])?;
+        let minute = self.parse_value_or_ebs_hex(parts[1])?;
+        let second = self.parse_value_or_ebs_hex(parts[2])?;
+        let tick = self.parse_value_or_ebs_hex(parts[3])?;
 
         Ok((hour, minute, second, tick))
     }
@@ -881,7 +881,7 @@ impl<'a> Parser<'a> {
         }
 
         let (rec, core) = self.parse_recursion_suffix(s.trim())?;
-        let parts = self.split_dot(&core);
+        let parts = self.split_dot(core);
         if parts.is_empty() {
             return Err(Error::new(
                 ErrorKind::InvalidStructure("location requires at least 1 axis"),
@@ -891,7 +891,7 @@ impl<'a> Parser<'a> {
 
         let mut axes = Vec::with_capacity(parts.len());
         for p in parts {
-            axes.push(self.parse_value_or_ebs_hex(&p)?);
+            axes.push(self.parse_value_or_ebs_hex(p)?);
         }
 
         Ok(Segment::Present(LocationSegment {
@@ -923,7 +923,7 @@ impl<'a> Parser<'a> {
                 return Err(Error::new(ErrorKind::InvalidHexValue("tier(2-hex)"), s));
             }
 
-            let h = self.parse_hex_with_len(&p, 2, 2, "tier(2-hex)")?;
+            let h = self.parse_hex_with_len(p, 2, 2, "tier(2-hex)")?;
             tiers.push(h.to_u128() as u8);
         }
 
@@ -956,7 +956,7 @@ impl<'a> Parser<'a> {
                 return Err(Error::new(ErrorKind::InvalidFoldTag, s));
             }
 
-            let (recursion, core) = self.parse_recursion_suffix(&raw)?;
+            let (recursion, core) = self.parse_recursion_suffix(raw)?;
             let tag = core.trim();
 
             // The value may be a numeric fold code (00..FF).
