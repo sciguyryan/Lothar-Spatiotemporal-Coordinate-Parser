@@ -163,7 +163,7 @@ pub enum TimeLoop {
     Infinite,      // "⟁∞"
     UntilBoundary, // "⟁∂"
     Paradox,       // "⟁⊥"
-    Count(u32),    // "⟁" + 1..8 hex digits, >= 1
+    Count(u128),   // "⟁" + 1..8 hex digits, >= 1
 }
 
 /// Time segment - hour·minute·second·tick
@@ -251,7 +251,7 @@ pub enum ErrorKind {
     WrongSegmentCount,
     InvalidHex,
     OutOfRange(&'static str),
-    InvalidLength(&'static str),
+    InvalidHexValue(&'static str),
     EbsNotAllowedHere,
     UnbalancedBraces,
     InvalidEbsSyntax(&'static str),
@@ -278,7 +278,7 @@ impl fmt::Display for ErrorKind {
             }
             ErrorKind::InvalidHex => f.write_str("invalid hexadecimal value"),
             ErrorKind::OutOfRange(label) => write!(f, "value out of range for {label}"),
-            ErrorKind::InvalidLength(label) => write!(f, "invalid length for {label}"),
+            ErrorKind::InvalidHexValue(label) => write!(f, "invalid length for {label}"),
             ErrorKind::EbsNotAllowedHere => {
                 f.write_str("EBS notation is not allowed in this segment")
             }
@@ -348,7 +348,7 @@ impl HexNum {
             return Err(Error::new(ErrorKind::InvalidHex, "empty"));
         }
 
-        let up = s.trim().to_ascii_uppercase();
+        let up = s.to_ascii_uppercase();
         if !up.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(Error::new(ErrorKind::InvalidHex, s));
         }
@@ -377,6 +377,7 @@ enum SegmentMark {
 struct Parser<'a> {
     src: &'a str,
 }
+
 impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
         Self { src }
@@ -407,22 +408,6 @@ impl<'a> Parser<'a> {
                     "⪤ is only allowed in the time segment",
                 ));
             }
-        }
-
-        // If the time segment is a placeholder, it must be *exactly* the token with no loop.
-        let tseg = raw_parts[1].trim();
-        if (tseg.contains("[selm]") || tseg.contains("[veth]")) && tseg.contains('⟁') {
-            return Err(Error::new(
-                ErrorKind::InvalidTimeLoopPlacement,
-                "⟁ cannot be combined with [selm]/[veth] in the time segment",
-            ));
-        }
-
-        if (tseg.contains("[selm]") || tseg.contains("[veth]")) && tseg.contains('⪤') {
-            return Err(Error::new(
-                ErrorKind::VtfmMisplaced,
-                "⪤ cannot be combined with [selm]/[veth]",
-            ));
         }
 
         // None of the segments can be empty; use [veth]/[selm] if intentionally absent.
@@ -476,9 +461,11 @@ impl<'a> Parser<'a> {
                 "⊥" => Recursion::TildeBottom,
                 _ => return Err(Error::new(ErrorKind::InvalidDecorator, &trimmed[pos..])),
             };
+
             let core = trimmed[..pos].trim_end();
             return Ok((rec, core));
         }
+
         Ok((Recursion::None, trimmed))
     }
 
@@ -496,7 +483,7 @@ impl<'a> Parser<'a> {
         let h = self.parse_hex(s)?;
         let len = h.text.len();
         if len < min || len > max {
-            return Err(Error::new(ErrorKind::InvalidLength(label), s));
+            return Err(Error::new(ErrorKind::InvalidHexValue(label), s));
         }
 
         Ok(h)
@@ -580,7 +567,7 @@ impl<'a> Parser<'a> {
             return Ok(ValueOrEbs::Ebs(Ebs::Exact(self.parse_hex(inner)?)));
         }
 
-        // No braces → plain hex value.
+        // No braces -> plain hex value.
         Ok(ValueOrEbs::Value(self.parse_hex(st)?))
     }
 
@@ -642,12 +629,14 @@ impl<'a> Parser<'a> {
             ));
         }
         let cycle = self.parse_value_or_ebs_hex(&parts[0])?;
-        let year = self.parse_value_or_ebs_hex(&parts[1])?;
-        let month = self.parse_value_or_ebs_hex(&parts[2])?;
-        let day = self.parse_value_or_ebs_hex(&parts[3])?;
 
+        let year = self.parse_value_or_ebs_hex(&parts[1])?;
         self.validate_upper_cap(&year, 0xFF, "year")?;
+
+        let month = self.parse_value_or_ebs_hex(&parts[2])?;
         self.validate_upper_cap(&month, 0xF, "month")?;
+
+        let day = self.parse_value_or_ebs_hex(&parts[3])?;
         self.validate_upper_cap(&day, 0xF, "day")?;
 
         Ok(Segment::Present(DateSegment {
@@ -737,17 +726,20 @@ impl<'a> Parser<'a> {
         if let Some(prefix) = st.strip_suffix("⟁∞") {
             return Ok((prefix.trim_end(), Some(TimeLoop::Infinite)));
         }
+
         if let Some(prefix) = st.strip_suffix("⟁∂") {
             return Ok((prefix.trim_end(), Some(TimeLoop::UntilBoundary)));
         }
+
         if let Some(prefix) = st.strip_suffix("⟁⊥") {
             return Ok((prefix.trim_end(), Some(TimeLoop::Paradox)));
         }
+
         if let Some(prefix) = st.strip_suffix('⟁') {
             return Ok((prefix.trim_end(), Some(TimeLoop::Simple)));
         }
 
-        // Hex-counted form: one trailing ⟁ followed by 1..8 *contiguous* hex digits.
+        // Hex-counted form - one trailing ⟁ followed by 1..8 *contiguous* hex digits.
         if let Some(pos) = st.rfind('⟁') {
             // Do NOT trim; spaces here are invalid.
             let tail_raw = &st[pos + '⟁'.len_utf8()..];
@@ -759,32 +751,17 @@ impl<'a> Parser<'a> {
                 ));
             }
 
-            // Reject any whitespace inside the loop count (token subsecting is not allowed).
-            if tail_raw.chars().any(|c| c.is_whitespace()) {
+            // A time-loop decorator must always come after a VTFM decorator.
+            if tail_raw.contains('⪤') {
                 return Err(Error::new(
                     ErrorKind::InvalidTimeLoopPlacement,
-                    "loop count must be contiguous (no spaces)",
-                ));
-            }
-
-            // Length > 8 is an error.
-            if tail_raw.len() > 8 {
-                return Err(Error::new(ErrorKind::TimeLoopCountTooLong, tail_raw));
-            }
-
-            // Must be hex.
-            if !tail_raw.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err(Error::new(
-                    ErrorKind::InvalidTimeLoopPlacement,
-                    "loop count must be 1–8 hex digits",
+                    "a time-loop decorator before a VTFM decorator",
                 ));
             }
 
             // Parse and reject zero explicitly.
-            let up = tail_raw.to_ascii_uppercase();
-            let n = u32::from_str_radix(&up, 16).map_err(|_| {
-                Error::new(ErrorKind::InvalidTimeLoopPlacement, "invalid loop count")
-            })?;
+            let h = self.parse_hex_with_len(tail_raw, 1, 8, "time_loop(1-8-hex)")?;
+            let n = h.to_u128();
             if n == 0 {
                 return Err(Error::new(ErrorKind::TimeLoopCountZero, tail_raw));
             }
@@ -943,13 +920,11 @@ impl<'a> Parser<'a> {
         let mut tiers = Vec::with_capacity(parts.len());
         for p in parts {
             if p.is_empty() {
-                return Err(Error::new(ErrorKind::InvalidLength("tier(2-hex)"), s));
+                return Err(Error::new(ErrorKind::InvalidHexValue("tier(2-hex)"), s));
             }
 
             let h = self.parse_hex_with_len(&p, 2, 2, "tier(2-hex)")?;
-            let v = u8::from_str_radix(&h.text, 16)
-                .map_err(|_| Error::new(ErrorKind::InvalidHex, p))?;
-            tiers.push(v);
+            tiers.push(h.to_u128() as u8);
         }
 
         Ok(Segment::Present(TierSegment { tiers }))
@@ -984,21 +959,22 @@ impl<'a> Parser<'a> {
             let (recursion, core) = self.parse_recursion_suffix(&raw)?;
             let tag = core.trim();
 
-            // The value may be a numeric fold code (00..FF), case-insensitive.
-            if tag.len() == 2 && tag.chars().all(|c| c.is_ascii_hexdigit()) {
-                let code = tag.to_ascii_uppercase();
+            // The value may be a numeric fold code (00..FF).
+            if tag.len() == 2 {
+                let h = self.parse_hex_with_len(tag, 2, 2, "")?;
                 folds.push(FoldTag {
-                    tag: code,
+                    tag: h.text.to_ascii_uppercase(),
                     recursion,
-                }); // Store canonically.
+                });
                 continue;
             }
 
-            // Tags should only ever be in upper case (symbolic tags).
+            // Tags should only ever be in uppercase (symbolic tags).
             if tag.is_empty() || !tag.chars().all(|c| c.is_ascii_uppercase()) {
                 if tag.chars().any(|c| c.is_ascii_lowercase()) {
                     return Err(Error::new(ErrorKind::LowercaseFoldTag, tag));
                 }
+
                 return Err(Error::new(ErrorKind::InvalidFoldTag, tag));
             }
 
@@ -1193,9 +1169,7 @@ fn display_time(t: &TimeSegment) -> String {
             TimeLoop::Infinite => out.push_str("⟁∞"),
             TimeLoop::UntilBoundary => out.push_str("⟁∂"),
             TimeLoop::Paradox => out.push_str("⟁⊥"),
-            TimeLoop::Count(n) => {
-                out.push_str(&format!("⟁{n:X}"));
-            }
+            TimeLoop::Count(n) => out.push_str(&format!("⟁{n:X}")),
         }
     }
 
@@ -1435,12 +1409,12 @@ mod tests {
 
         assert!(matches!(
             err("0·0·0·0 / 0·0·0·0⟁123456789 / 0 / 00 / ANN / 0 / kal"),
-            ErrorKind::TimeLoopCountTooLong
+            ErrorKind::InvalidHexValue("time_loop(1-8-hex)")
         ));
 
         assert!(matches!(
             err("0·0·0·0 / 0·0·0·0⟁ A / 0 / 00 / ANN / 0 / kal"),
-            ErrorKind::InvalidTimeLoopPlacement
+            ErrorKind::InvalidHex
         ));
     }
 
@@ -1660,10 +1634,12 @@ mod tests {
     #[test]
     fn location_many_axes_and_whitespace_tolerant_decorator() {
         let c1 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3~⊥ / 00 / ANN / 0 / kal");
-        let c2 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3 ~⊥ / 00 / ANN / 0 / kal");
-        let c3 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3~ ⊥ / 00 / ANN / 0 / kal");
         assert_eq!(loc_axes(&c1).len(), 3);
+
+        let c2 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3 ~⊥ / 00 / ANN / 0 / kal");
         assert_eq!(loc_axes(&c2).len(), 3);
+
+        let c3 = ok("0·00·0·0 / 0·0·0·0 / 1·2·3~ ⊥ / 00 / ANN / 0 / kal");
         assert_eq!(loc_axes(&c3).len(), 3);
     }
 
@@ -1680,12 +1656,12 @@ mod tests {
 
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·0 / 0 / A / ANN / 1 / ven'da"),
-            ErrorKind::InvalidLength("tier(2-hex)")
+            ErrorKind::InvalidHexValue("tier(2-hex)")
         ));
 
         assert!(matches!(
             err("0·00·0·0 / 0·0·0·0 / 0 / 0AF / ANN / 1 / ven'da"),
-            ErrorKind::InvalidLength("tier(2-hex)")
+            ErrorKind::InvalidHexValue("tier(2-hex)")
         ));
 
         // EBS not allowed in tier.
@@ -1710,6 +1686,22 @@ mod tests {
         // We just assert chain length and that numeric items remain present;
         // internal normalisation is implementation detail.
         assert_eq!(folds.len(), 4);
+
+        // Hex numbers of length other than 2 should be rejected.
+        assert!(matches!(
+            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / A / B7 / kal"),
+            ErrorKind::InvalidFoldTag
+        ));
+        assert!(matches!(
+            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / AAAA / B7 / kal"),
+            ErrorKind::InvalidFoldTag
+        ));
+
+        // Hex numbers with a space should be rejected.
+        assert!(matches!(
+            err("0·00·0·0 / 0·0·0·0 / 0 / 00 / A A / B7 / kal"),
+            ErrorKind::InvalidFoldTag
+        ));
 
         // Lowercase tag rejected.
         assert!(matches!(
@@ -1852,15 +1844,13 @@ mod tests {
     #[test]
     fn round_trip_canonicalises_noise_and_is_stable() {
         let noisy = "  abcd · ff · f · f  /  F · 3f · 3f · ffffffff⪤↻⟁a  /  1 · 2 · 3 ~ ⊥  /  0a · FF  /  ANN · REC  / beef  /  kal'mi  ";
-        let c = ok(noisy);
-        let out = format!("{c}");
+        let out = format!("{}", ok(noisy));
         assert!(out.contains(
             "ABCD·FF·F·F / F·3F·3F·FFFFFFFF⪤↻⟁A / 1·2·3~⊥ / 0A·FF / ANN·REC / BEEF / kal'mi"
         ));
 
         // Stable print on second round.
-        let c2 = ok(&out);
-        assert_eq!(format!("{c}"), format!("{c2}"));
+        assert_eq!(out, format!("{}", ok(&out)));
     }
 
     // -----------------------
@@ -1882,7 +1872,7 @@ mod tests {
     // -----------------------
     // Torture tests
     // -----------------------
-    // ---------- gargantuan: maximal feature coverage INCLUDING VTFM + loop ----------
+
     #[test]
     fn gargantuan_coordinate_all_supported_features_including_vtfm_and_loop() {
         // Date: large cycle + nontrivial Y/M/D.
