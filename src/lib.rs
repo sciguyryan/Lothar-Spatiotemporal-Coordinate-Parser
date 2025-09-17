@@ -99,9 +99,56 @@ const VTFM_SUFFIXES: &[(&str, TimeFlowMod)] = &[
 /// Allowed single-glyph decorators that may follow ⪤.
 const VTFM_DECORATORS: &[&str] = &["↻", "⇌", "⊞", "⊗", "⊘", "↡"];
 
+/// Reject common homoglyphs/confusables that can silently break parsing.
+/// We prefer explicit errors with hints so inputs can be corrected quickly.
+fn reject_homoglyphs(s: &str) -> Result<(), Error> {
+    // (char, hint)
+    const DISALLOWED: &[(char, &str)] = &[
+        ('’', "use ASCII apostrophe '"),
+        ('‘', "use ASCII apostrophe '"),
+        ('“', "use ASCII double quote \""),
+        ('”', "use ASCII double quote \""),
+        ('–', "use hyphen -"),
+        ('—', "use hyphen -"),
+        ('•', "use middle dot ·"),
+        ('：', "use colon :"),
+        ('｡', "use period ."),
+        ('・', "use middle dot ·"),
+    ];
+
+    if let Some((bad, hint)) = s.chars().find_map(|c| {
+        DISALLOWED
+            .iter()
+            .find(|(d, _)| *d == c)
+            .map(|(_, h)| (c, *h))
+    }) {
+        return Err(Error::new(
+            ErrorKind::InvalidStructure(hint),
+            format!("found disallowed char {bad}"),
+        ));
+    }
+    Ok(())
+}
+
 /// Top-level parse entry point.
 pub fn parse(input: &str) -> Result<Coordinate, Error> {
     Parser::new(input).parse()
+}
+
+impl std::str::FromStr for Coordinate {
+    type Err = Error;
+    /// Parses a [`Coordinate`] from a string. Equivalent to calling [`parse`].
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse(s)
+    }
+}
+
+impl std::convert::TryFrom<&str> for Coordinate {
+    type Error = Error;
+    /// Attempts to parse a [`Coordinate`] from `&str`. Equivalent to [`parse`].
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        parse(value)
+    }
 }
 
 /// Recursion decorators permitted on Location (whole segment) and on Fold tags.
@@ -225,6 +272,32 @@ pub enum Segment<T> {
     Omitted, // [veth]
 }
 
+impl<T> Segment<T> {
+    /// Returns true if this segment is present (i.e., not veiled or omitted).
+    #[inline]
+    pub fn is_present(&self) -> bool {
+        matches!(self, Self::Present(_))
+    }
+
+    /// Borrows the inner value, preserving the segment wrapper.
+    pub fn as_ref(&self) -> Segment<&T> {
+        match self {
+            Self::Present(t) => Segment::Present(t),
+            Self::Veiled => Segment::Veiled,
+            Self::Omitted => Segment::Omitted,
+        }
+    }
+
+    /// Maps a `Segment<T>` to a `Segment<U>` by applying a function to the contained value.
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Segment<U> {
+        match self {
+            Self::Present(t) => Segment::Present(f(t)),
+            Self::Veiled => Segment::Veiled,
+            Self::Omitted => Segment::Omitted,
+        }
+    }
+}
+
 pub type Date = Segment<DateSegment>;
 pub type Time = Segment<TimeSegment>;
 pub type Location = Segment<LocationSegment>;
@@ -247,6 +320,7 @@ pub struct Coordinate {
 
 /// Error type with granular categories.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ErrorKind {
     WrongSegmentCount,
     InvalidHex,
@@ -336,6 +410,8 @@ impl fmt::Display for Error {
     }
 }
 
+impl std::error::Error for Error {}
+
 /// Hex number wrapper holding the normalised uppercase string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HexNum {
@@ -384,6 +460,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse(&self) -> Result<Coordinate, Error> {
+        reject_homoglyphs(self.src)?;
         let raw_parts: Vec<&str> = self.src.split('/').map(|s| s.trim()).collect();
         if raw_parts.len() != 7 {
             return Err(Error::new(
@@ -1792,7 +1869,7 @@ mod tests {
         }
 
         // Internal apostrophe stays, curly suffix canonicalised.
-        let c = ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / inther'kael’mi");
+        let c = ok("0·0·0·0 / 0·0·0·0 / 0 / 00 / ANN / 1 / inther'kael'mi");
         if let Segment::Present(m) = c.modal {
             assert_eq!(m.token, "inther'kael");
             assert_eq!(m.suffix, "'mi");
@@ -1889,7 +1966,7 @@ mod tests {
             / 00·01·0A·FF·D2·A1 \
             / ANN·0F·DRM·REMGEN·LUC·PSI·REC·INV·RLK·SPR·SYM·TMP \
             / DEADBEEFCAFEBABE0123456789ABCDEF \
-            / na’inther'kael’da";
+            / na'inther'kael'da";
 
         let c = ok(s);
 
@@ -1958,5 +2035,35 @@ mod tests {
         let canon = format!("{c}");
         let c2 = ok(&canon);
         assert_eq!(format!("{c2}"), canon);
+    }
+}
+
+#[cfg(test)]
+mod added_nonbehavioral_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_curly_apostrophe() {
+        let input = "12BFF·7·D·A / 3·1F·2A·FF / 1 / 00 / ANN / B7C5 / kal’mi";
+        let err = parse(input).unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::InvalidStructure(_)));
+    }
+
+    #[test]
+    fn rejects_en_dash() {
+        let input = "12BFF·7·D·A / 3·1F·2A·FF / 1 / 00 / ANN / B7C5 / kal–mi";
+        let err = parse(input).unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::InvalidStructure(_)));
+    }
+
+    #[test]
+    fn round_trip_sample_stays_equivalent() {
+        let input =
+            "12BFF·7·D·A / F·3F·3F·FFFFFFFF⪤⊗⟁A / 1·2·3~⊥ / 0A·FF / ANN·REC / BEEF / kal'mi";
+        let c = parse(input).expect("parse");
+        let rendered = format!("{c}");
+        // Re-parse the rendered form must succeed and remain semantically equal.
+        let c2 = parse(&rendered).expect("reparse");
+        assert_eq!(c, c2);
     }
 }
